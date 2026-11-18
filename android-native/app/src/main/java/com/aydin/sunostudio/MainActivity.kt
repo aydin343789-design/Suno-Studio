@@ -164,6 +164,27 @@ class MainActivity : ComponentActivity() {
               document.querySelectorAll('audio, audio source, video, video source').forEach(e => {
                 add(e.currentSrc || e.src || e.getAttribute('src'), e.type || e.tagName);
               });
+              // Inspect structured public page state for canonical audio URLs; never synthesize CDN URLs.
+              const scanPublicState = (value, key, depth) => {
+                if (depth > 7 || value == null) return;
+                if (typeof value === 'string') {
+                  if (/(audio|stream).*(url|src)|(url|src).*(audio|stream)/i.test(key || '')) add(value, 'public-state:' + key);
+                  return;
+                }
+                if (Array.isArray(value)) { value.forEach(v => scanPublicState(v, key, depth + 1)); return; }
+                if (typeof value === 'object') Object.keys(value).forEach(k => scanPublicState(value[k], k, depth + 1));
+              };
+              document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__').forEach(el => {
+                try { scanPublicState(JSON.parse(el.textContent || ''), 'page-state', 0); } catch(e) {}
+              });
+              document.querySelectorAll('script:not([src])').forEach(el => {
+                const txt = el.textContent || '';
+                const re = /["'](?:audio_url|audioUrl|stream_audio_url|streamAudioUrl|audio_src|audioSrc)["']\\s*:\\s*["']([^"']+)["']/gi;
+                let m;
+                while ((m = re.exec(txt)) !== null) {
+                  try { add(m[1].replace(/\\\\u0026/g, '&').replace(/\\\\\\//g, '/'), 'public-state:embedded-audio-url'); } catch(e) {}
+                }
+              });
               ['og:audio','og:audio:secure_url','twitter:player:stream'].forEach(k => {
                 const e = document.querySelector('meta[property="'+k+'"],meta[name="'+k+'"]');
                 if (e) add(e.content, k);
