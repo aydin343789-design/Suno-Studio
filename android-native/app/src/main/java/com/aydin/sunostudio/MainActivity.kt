@@ -332,7 +332,7 @@ class MainActivity : ComponentActivity() {
                 decodeWav(source, temp)
                 result = outputUri(base + ".wav", "audio/wav")
                 contentResolver.openOutputStream(result, "w")!!.use { out -> temp.inputStream().use { it.copyTo(out) } }
-                publish(result)
+                publish(result, temp.length())
                 ui.post { setWorking(false, "تبدیل انجام شد؛ " + base + ".wav در پوشه Music/Suno Studio ذخیره شد.") }
             } catch (e: Exception) {
                 if (result != null) try { contentResolver.delete(result, null, null) } catch (_: Exception) {}
