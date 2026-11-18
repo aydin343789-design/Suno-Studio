@@ -292,7 +292,9 @@ class MainActivity : ComponentActivity() {
             val declaredSize = c.contentLengthLong
             // Preserve tiny audio responses for inspection; they may be preview or placeholder files.
             var copied = 0L
-            contentResolver.openOutputStream(uri, "w")!!.use { out ->
+            val output = contentResolver.openOutputStream(uri, "w")
+                ?: error("اندروید نتوانست فایل خروجی را باز کند.")
+            output.use { out ->
                 c.inputStream.use { input ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
@@ -301,6 +303,7 @@ class MainActivity : ComponentActivity() {
                         out.write(buffer, 0, n)
                         copied += n
                     }
+                    out.flush()
                 }
             }
             require(copied > 0) {
@@ -308,7 +311,9 @@ class MainActivity : ComponentActivity() {
             }
             if (declaredSize >= 0) require(copied == declaredSize) { "دانلود ناقص بود؛ اندازهٔ فایل با مقدار اعلام‌شده برابر نیست." }
             c.disconnect()
-            publish(uri)
+            publish(uri, copied)
+            val savedName = querySavedName(uri)
+            require(savedName.isNotBlank()) { "فایل دریافت شد، اما در حافظهٔ رسانه‌ای گوشی قابل مشاهده نیست." }
         } catch (e: Exception) {
             try { contentResolver.delete(uri, null, null) } catch (_: Exception) {}
             throw e
@@ -442,9 +447,32 @@ class MainActivity : ComponentActivity() {
         }
         return contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, v) ?: error("ساخت فایل خروجی ممکن نشد.")
     }
-    private fun publish(uri: Uri) {
+    private fun publish(uri: Uri, expectedBytes: Long) {
         val v = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-        contentResolver.update(uri, v, null, null)
+        val updated = contentResolver.update(uri, v, null, null)
+        require(updated == 1) { "اندروید فایل را دریافت کرد اما نتوانست آن را در پوشهٔ Music منتشر کند." }
+        var visible = false
+        var actualSize = 0L
+        contentResolver.query(
+            uri,
+            arrayOf(MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.IS_PENDING),
+            null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                actualSize = cursor.getLong(0)
+                val pendingIndex = cursor.getColumnIndex(MediaStore.MediaColumns.IS_PENDING)
+                visible = pendingIndex < 0 || cursor.getInt(pendingIndex) == 0
+            }
+        }
+        require(visible && actualSize > 0L && actualSize == expectedBytes) {
+            "فایل در حافظهٔ گوشی تأیید نشد؛ حجم مورد انتظار: $expectedBytes بایت، حجم ثبت‌شده: $actualSize بایت."
+        }
+    }
+    private fun querySavedName(uri: Uri): String {
+        contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) return it.getString(0) ?: ""
+        }
+        return ""
     }
     private fun isSunoHost(host: String) = host.equals("suno.com", true) || host.endsWith(".suno.com", true)
     private fun isSunoAudio(raw: String): Boolean = try {
