@@ -93,22 +93,32 @@ class MainActivity : ComponentActivity() {
         if (pageUrl.protocol != "https" || !isSunoHost(pageUrl.host)) {
             message("فقط لینک HTTPS از دامنهٔ رسمی suno.com پذیرفته می‌شود."); return
         }
-        setWorking(true, "در حال بررسی صفحهٔ عمومی Suno…")
+        val songId = Regex("(?i)^/song/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/?$")
+            .find(pageUrl.path)?.groupValues?.get(1)
+        setWorking(true, "در حال بررسی لینک عمومی Suno…")
         thread {
             try {
-                val doc = Jsoup.connect(raw).userAgent("Mozilla/5.0 Android SunoStudio").timeout(18000).get()
-                require(isSunoHost(URL(doc.location()).host)) { "صفحه به دامنهٔ دیگری منتقل شد." }
-                val keys = listOf("meta[property=og:audio]", "meta[property=og:audio:secure_url]", "meta[name=twitter:player:stream]")
-                var audio: String? = null
-                for (key in keys) {
-                    val candidate = doc.selectFirst(key)?.attr("content")?.trim()
-                    if (!candidate.isNullOrBlank() && isSunoAudio(candidate)) { audio = candidate; break }
+                if (songId != null) {
+                    // Observed public Suno CDN convention for canonical song UUIDs.
+                    // This is not a documented/stable Suno API; validate the response before saving.
+                    val direct = "https://cdn1.suno.ai/$songId.mp3"
+                    saveRemote(direct, "$songId.mp3")
+                    ui.post { setWorking(false, "دانلود کامل شد: $songId.mp3 در Music/Suno Studio") }
+                } else {
+                    val doc = Jsoup.connect(raw).userAgent("Mozilla/5.0 Android SunoStudio").timeout(18000).get()
+                    require(isSunoHost(URL(doc.location()).host)) { "صفحه به دامنهٔ دیگری منتقل شد." }
+                    val keys = listOf("meta[property=og:audio]", "meta[property=og:audio:secure_url]", "meta[name=twitter:player:stream]")
+                    var audio: String? = null
+                    for (key in keys) {
+                        val candidate = doc.selectFirst(key)?.attr("content")?.trim()
+                        if (!candidate.isNullOrBlank() && isSunoAudio(candidate)) { audio = candidate; break }
+                    }
+                    require(audio != null) { "این نوع لینک، نشانی مستقیم و عمومی صوتی ارائه نکرده است." }
+                    val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.take(80) ?: "Suno-audio"
+                    val name = safeName(title) + ".mp3"
+                    saveRemote(audio!!, name)
+                    ui.post { setWorking(false, "دانلود کامل شد: $name در Music/Suno Studio") }
                 }
-                require(audio != null) { "این صفحه URL مستقیم و عمومی صوتی ارائه نکرده است. برای این آهنگ از دانلود رسمی Suno استفاده کن." }
-                val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.take(80) ?: "Suno-audio"
-                val name = safeName(title) + ".mp3"
-                saveRemote(audio!!, name)
-                ui.post { setWorking(false, "دانلود کامل شد: " + name + " در Music/Suno Studio") }
             } catch (e: Exception) {
                 ui.post { setWorking(false, e.message ?: "دانلود انجام نشد.") }
             }
@@ -122,12 +132,35 @@ class MainActivity : ComponentActivity() {
             val c = URL(link).openConnection() as HttpURLConnection
             c.instanceFollowRedirects = true
             c.connectTimeout = 15000
-            c.readTimeout = 30000
+            c.readTimeout = 45000
             c.setRequestProperty("User-Agent", "Mozilla/5.0 SunoStudioAndroid")
             c.connect()
             require(c.responseCode in 200..299) { "دریافت فایل ناموفق بود؛ HTTP " + c.responseCode }
             require(isSunoAudio(c.url.toString())) { "مسیر دانلود به دامنهٔ غیرمجاز منتقل شد." }
-            contentResolver.openOutputStream(uri, "w")!!.use { out -> c.inputStream.use { it.copyTo(out) } }
+            val mime = (c.contentType ?: "").lowercase()
+            require(mime.startsWith("audio/") || mime == "application/octet-stream") {
+                "پاسخ CDN فایل صوتی نیست (نوع محتوا: " + mime + "). ممکن است لینک منقضی یا آهنگ در دسترس نباشد."
+            }
+            val declaredSize = c.contentLengthLong
+            require(declaredSize < 0 || declaredSize >= 8192) {
+                "فایل برگشتی بیش از حد کوچک است و احتمالاً صدای جایگزین/خطاست، نه آهنگ اصلی."
+            }
+            var copied = 0L
+            contentResolver.openOutputStream(uri, "w")!!.use { out ->
+                c.inputStream.use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        out.write(buffer, 0, n)
+                        copied += n
+                    }
+                }
+            }
+            require(copied >= 8192) {
+                "فایل دریافتی فقط $copied بایت است؛ آهنگ کامل دریافت نشده است."
+            }
+            if (declaredSize >= 0) require(copied == declaredSize) { "دانلود ناقص بود؛ اندازهٔ فایل با مقدار اعلام‌شده برابر نیست." }
             c.disconnect()
             publish(uri)
         } catch (e: Exception) {
