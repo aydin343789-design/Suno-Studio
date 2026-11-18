@@ -23,5 +23,6 @@ android {
 }
 
 dependencies {
+    implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("org.jsoup:jsoup:1.18.3")
 }
