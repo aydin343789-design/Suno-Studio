@@ -176,8 +176,16 @@ class MainActivity : ComponentActivity() {
             if (!working) return@evaluateJavascript
             try {
                 val jsonText = if (encoded == null || encoded == "null") "" else org.json.JSONTokener(encoded).nextValue() as? String ?: ""
-                if (jsonText.isNotBlank()) handlePageExtraction(jsonText)
-                else retryExtraction(view)
+                if (jsonText.isNotBlank()) {
+                    val parsed = JSONObject(jsonText)
+                    val found = parsed.optJSONArray("candidates")?.length() ?: 0
+                    if (found > 0 || extractionAttempt >= 8) handlePageExtraction(jsonText)
+                    else {
+                        val title = parsed.optString("title").ifBlank { "در حال شناسایی آهنگ…" }
+                        extractionInfo.text = "صفحه بارگذاری شد؛ در حال استخراج اطلاعات و منابع صوتی…\\nعنوان: $title"
+                        retryExtraction(view)
+                    }
+                } else retryExtraction(view)
             } catch (_: Exception) { retryExtraction(view) }
         }
     }
