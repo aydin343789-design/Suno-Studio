@@ -106,20 +106,16 @@ class MainActivity : ComponentActivity() {
             }
         }
         page.addView(extractionWebView, LinearLayout.LayoutParams(1, 1))
-        page.addView(text("فقط اطلاعات و فایل‌هایی دریافت می‌شوند که از صفحهٔ عمومی و مسیر مجاز Suno در دسترس باشند.", 12f, Color.GRAY, false).pad(0, 10, 0, 22))
 
         page.addView(text("۲. تبدیل فایل‌های داخل گوشی", 19f, Color.WHITE, true).pad(0, 8, 0, 12))
-        page.addView(text("فایل صوتی را انتخاب کن. تبدیل روی خود گوشی انجام می‌شود و اینترنت لازم ندارد.", 14f, Color.LTGRAY, false).pad(0, 0, 0, 10))
         page.addView(button("انتخاب فایل صوتی", false) { if (!working) picker.launch(arrayOf("audio/*")) }, params())
         chosen = text("هنوز فایلی انتخاب نشده است.", 13f, Color.GRAY, false).pad(0, 12, 0, 12)
         page.addView(chosen)
         page.addView(button("تبدیل به WAV و ذخیره در گوشی", true) { convert() }, params())
-        page.addView(text("در این نسخه تبدیل محلی به WAV (PCM شانزده‌بیتی) فعال است. دانلود Suno با فرمت اصلی انجام می‌شود؛ خروجی MP3 برای تبدیل فایل‌های محلی در مرحلهٔ بعدی اضافه خواهد شد.", 12f, Color.GRAY, false).pad(0, 10, 0, 22))
         busyBar = ProgressBar(this).apply { visibility = View.GONE }
         page.addView(busyBar, params())
         status = text("آماده به کار", 14f, Color.rgb(190, 178, 255), true).pad(0, 12, 0, 0)
         page.addView(status)
-        page.addView(text("پردازش محلی • بدون سرور واسطه", 11f, Color.GRAY, false).apply { gravity = Gravity.CENTER }.pad(0, 26, 0, 0))
         setContentView(scroll)
     }
 
@@ -261,7 +257,7 @@ class MainActivity : ComponentActivity() {
                     break
                 } catch (e: Exception) { lastError = e.message ?: lastError }
             }
-            if (saved) ui.post { setWorking(false, "دانلود کامل شد: $safeTitle.mp3 در Music/Suno Studio") }
+            if (saved) ui.post { setWorking(false, "پاسخ صوتی دریافت و ذخیره شد: $safeTitle.mp3 در Music/Suno Studio (حتی اگر کوتاه یا نمونه باشد).") }
             else ui.post { setWorking(false, "اطلاعات آهنگ استخراج شد، اما دریافت منبع صوتی موفق نبود: $lastError") }
         }
     }
@@ -294,9 +290,7 @@ class MainActivity : ComponentActivity() {
                 "پاسخ CDN فایل صوتی نیست (نوع محتوا: " + mime + "). ممکن است لینک منقضی یا آهنگ در دسترس نباشد."
             }
             val declaredSize = c.contentLengthLong
-            require(declaredSize < 0 || declaredSize >= 8192) {
-                "منبع شناسایی‌شده فایل کامل نیست: اندازه $declaredSize بایت، نوع $mime، مسیر \${c.url.path}. این منبع احتمالاً پیش‌نمایش یا صدای جایگزین است."
-            }
+            // Preserve tiny audio responses for inspection; they may be preview or placeholder files.
             var copied = 0L
             contentResolver.openOutputStream(uri, "w")!!.use { out ->
                 c.inputStream.use { input ->
@@ -309,8 +303,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            require(copied >= 8192) {
-                "فایل دریافتی فقط $copied بایت است؛ آهنگ کامل دریافت نشده است."
+            require(copied > 0) {
+                "پاسخ صوتی خالی بود؛ هیچ داده‌ای دریافت نشد."
             }
             if (declaredSize >= 0) require(copied == declaredSize) { "دانلود ناقص بود؛ اندازهٔ فایل با مقدار اعلام‌شده برابر نیست." }
             c.disconnect()
