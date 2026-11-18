@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
                     // Observed public Suno CDN convention for canonical song UUIDs.
                     // This is not a documented/stable Suno API; validate the response before saving.
                     val direct = "https://cdn1.suno.ai/$songId.mp3"
-                    saveRemote(direct, "$songId.mp3")
+                    saveRemote(direct, "$songId.mp3", raw)
                     ui.post { setWorking(false, "دانلود کامل شد: $songId.mp3 در Music/Suno Studio") }
                 } else {
                     val doc = Jsoup.connect(raw).userAgent("Mozilla/5.0 Android SunoStudio").timeout(18000).get()
@@ -127,7 +127,7 @@ class MainActivity : ComponentActivity() {
                     require(audio != null) { "این نوع لینک، نشانی مستقیم و عمومی صوتی ارائه نکرده است." }
                     val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.take(80) ?: "Suno-audio"
                     val name = safeName(title) + ".mp3"
-                    saveRemote(audio!!, name)
+                    saveRemote(audio!!, name, raw)
                     ui.post { setWorking(false, "دانلود کامل شد: $name در Music/Suno Studio") }
                 }
             } catch (e: Exception) {
@@ -136,7 +136,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun saveRemote(link: String, name: String) {
+    private fun saveRemote(link: String, name: String, referer: String) {
         require(isSunoAudio(link)) { "دامنهٔ فایل صوتی مجاز نیست." }
         val uri = outputUri(name, "audio/mpeg")
         try {
@@ -144,9 +144,15 @@ class MainActivity : ComponentActivity() {
             c.instanceFollowRedirects = true
             c.connectTimeout = 15000
             c.readTimeout = 45000
-            c.setRequestProperty("User-Agent", "Mozilla/5.0 SunoStudioAndroid")
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+            c.setRequestProperty("Accept", "audio/avif,audio/webm,audio/apng,audio/*,*/*;q=0.8")
+            c.setRequestProperty("Referer", referer)
+            c.setRequestProperty("Origin", "https://suno.com")
             c.connect()
-            require(c.responseCode in 200..299) { "دریافت فایل ناموفق بود؛ HTTP " + c.responseCode }
+            require(c.responseCode in 200..299) {
+                if (c.responseCode == 403) "سرور Suno/CDN درخواست دانلود مستقیم را با HTTP 403 رد کرد؛ احتمالاً این لینک به دسترسی مرورگر یا نشانی موقت نیاز دارد."
+                else "دریافت فایل ناموفق بود؛ HTTP " + c.responseCode
+            }
             require(isSunoAudio(c.url.toString())) { "مسیر دانلود به دامنهٔ غیرمجاز منتقل شد." }
             val mime = (c.contentType ?: "").lowercase()
             require(mime.startsWith("audio/") || mime == "application/octet-stream") {
