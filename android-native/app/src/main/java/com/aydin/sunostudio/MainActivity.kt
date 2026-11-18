@@ -220,13 +220,7 @@ class MainActivity : ComponentActivity() {
                 val jsonText = if (encoded == null || encoded == "null") "" else org.json.JSONTokener(encoded).nextValue() as? String ?: ""
                 if (jsonText.isNotBlank()) {
                     val parsed = JSONObject(jsonText)
-                    val found = parsed.optJSONArray("candidates")?.length() ?: 0
-                    if (found > 0 || extractionAttempt >= 8) handlePageExtraction(jsonText)
-                    else {
-                        val title = parsed.optString("title").ifBlank { "در حال شناسایی آهنگ…" }
-                        extractionInfo.text = "صفحه بارگذاری شد؛ در حال استخراج اطلاعات و منابع صوتی…\\nعنوان: $title"
-                        retryExtraction(view)
-                    }
+                    handlePageExtraction(jsonText)
                 } else retryExtraction(view)
             } catch (_: Exception) { retryExtraction(view) }
         }
@@ -248,12 +242,12 @@ class MainActivity : ComponentActivity() {
         val image = data.optString("image")
         val expectedDurationMs = (data.optDouble("expectedDuration", 0.0) * 1000.0).toLong()
         extractionInfo.text = buildString {
-            append("اطلاعات صفحه استخراج شد\\nعنوان: ").append(title)
-            if (artist.isNotBlank()) append("\\nسازنده: ").append(artist)
-            if (description.isNotBlank()) append("\\nتوضیحات: ").append(description.take(220))
-            if (image.isNotBlank()) append("\\nتصویر کاور: شناسایی شد")
-            if (expectedDurationMs > 0) append("\\nمدت آهنگ: ").append(expectedDurationMs / 1000).append(" ثانیه")
-            append("\\nروش دریافت: API رسمی دانلود Suno (M4A)")
+            append("اطلاعات صفحه استخراج شد\nعنوان: ").append(title)
+            if (artist.isNotBlank()) append("\nسازنده: ").append(artist)
+            if (description.isNotBlank()) append("\nتوضیحات: ").append(description.take(220))
+            if (image.isNotBlank()) append("\nتصویر کاور: شناسایی شد")
+            if (expectedDurationMs > 0) append("\nمدت آهنگ: ").append(expectedDurationMs / 1000).append(" ثانیه")
+            append("\nروش دریافت: API رسمی دانلود Suno (M4A)")
         }
         setWorking(true, "در حال درخواست لینک دانلود رسمی M4A از Suno…")
         requestOfficialM4a(title, expectedDurationMs)
