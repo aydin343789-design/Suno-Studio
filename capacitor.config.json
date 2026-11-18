@@ -1,7 +1,0 @@
-{
-  "appId": "com.aydin343789.sunostudio",
-  "appName": "Suno Studio",
-  "webDir": "public",
-  "bundledWebRuntime": false,
-  "server": { "androidScheme": "https" }
-}

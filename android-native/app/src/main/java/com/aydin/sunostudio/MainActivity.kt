@@ -104,32 +104,24 @@ class MainActivity : ComponentActivity() {
         if (pageUrl.protocol != "https" || !isSunoHost(pageUrl.host)) {
             message("فقط لینک HTTPS از دامنهٔ رسمی suno.com پذیرفته می‌شود."); return
         }
-        val songId = Regex("(?i)^/song/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/?$")
-            .find(pageUrl.path)?.groupValues?.get(1)
         setWorking(true, "در حال بررسی لینک عمومی Suno…")
         thread {
             try {
-                if (songId != null) {
-                    // Observed public Suno CDN convention for canonical song UUIDs.
-                    // This is not a documented/stable Suno API; validate the response before saving.
-                    val direct = "https://cdn1.suno.ai/$songId.mp3"
-                    saveRemote(direct, "$songId.mp3", raw)
-                    ui.post { setWorking(false, "دانلود کامل شد: $songId.mp3 در Music/Suno Studio") }
-                } else {
-                    val doc = Jsoup.connect(raw).userAgent("Mozilla/5.0 Android SunoStudio").timeout(18000).get()
-                    require(isSunoHost(URL(doc.location()).host)) { "صفحه به دامنهٔ دیگری منتقل شد." }
-                    val keys = listOf("meta[property=og:audio]", "meta[property=og:audio:secure_url]", "meta[name=twitter:player:stream]")
-                    var audio: String? = null
-                    for (key in keys) {
-                        val candidate = doc.selectFirst(key)?.attr("content")?.trim()
-                        if (!candidate.isNullOrBlank() && isSunoAudio(candidate)) { audio = candidate; break }
-                    }
-                    require(audio != null) { "این نوع لینک، نشانی مستقیم و عمومی صوتی ارائه نکرده است." }
-                    val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.take(80) ?: "Suno-audio"
-                    val name = safeName(title) + ".mp3"
-                    saveRemote(audio!!, name, raw)
-                    ui.post { setWorking(false, "دانلود کامل شد: $name در Music/Suno Studio") }
+                // Only use a direct audio URL explicitly exposed by the public page metadata.
+                // Do not guess CDN URLs from song IDs or access private/restricted resources.
+                val doc = Jsoup.connect(raw).userAgent("Mozilla/5.0 Android SunoStudio").timeout(18000).get()
+                require(isSunoHost(URL(doc.location()).host)) { "صفحه به دامنهٔ دیگری منتقل شد." }
+                val keys = listOf("meta[property=og:audio]", "meta[property=og:audio:secure_url]", "meta[name=twitter:player:stream]")
+                var audio: String? = null
+                for (key in keys) {
+                    val candidate = doc.selectFirst(key)?.attr("content")?.trim()
+                    if (!candidate.isNullOrBlank() && isSunoAudio(candidate)) { audio = candidate; break }
                 }
+                require(audio != null) { "این صفحه نشانی مستقیم و عمومی صوتی ارائه نکرده است؛ از دانلود رسمی Suno استفاده کن." }
+                val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.take(80) ?: "Suno-audio"
+                val name = safeName(title) + ".mp3"
+                saveRemote(audio!!, name, raw)
+                ui.post { setWorking(false, "دانلود کامل شد: $name در Music/Suno Studio") }
             } catch (e: Exception) {
                 ui.post { setWorking(false, e.message ?: "دانلود انجام نشد.") }
             }
