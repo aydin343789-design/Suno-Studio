@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
         page.addView(extractionInfo)
         extractionWebView = WebView(this).apply {
             visibility = View.INVISIBLE
+            addJavascriptInterface(SunoDownloadBridge(), "SunoDownloadBridge")
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = true
@@ -241,59 +242,118 @@ class MainActivity : ComponentActivity() {
 
     private fun handlePageExtraction(rawJson: String) {
         val data = JSONObject(rawJson)
-        val title = data.optString("title").ifBlank { "عنوان در دسترس نیست" }
+        val title = data.optString("title").ifBlank { "Suno-audio" }
         val artist = data.optString("artist")
         val description = data.optString("description")
         val image = data.optString("image")
-        val candidates = data.optJSONArray("candidates")
         val expectedDurationMs = (data.optDouble("expectedDuration", 0.0) * 1000.0).toLong()
-        val summary = buildString {
-            append("استخراج اطلاعات صفحه انجام شد\nعنوان: ").append(title)
-            if (artist.isNotBlank()) append("\nسازنده: ").append(artist)
-            if (description.isNotBlank()) append("\nتوضیحات: ").append(description.take(220))
-            if (image.isNotBlank()) append("\nتصویر کاور: شناسایی شد")
-            if (expectedDurationMs > 0) append("\nمدت آهنگ: ").append(expectedDurationMs / 1000).append(" ثانیه")
-            append("\nمنابع صوتی شناسایی‌شده: ").append(candidates?.length() ?: 0)
-            if (candidates != null) {
-                for (i in 0 until minOf(candidates.length(), 3)) {
-                    val item = candidates.optJSONObject(i) ?: continue
-                    val u = try { URL(item.optString("url")) } catch (_: Exception) { null }
-                    if (u != null) append("\nنامزد ").append(i + 1).append(": ").append(u.host).append(u.path.takeLast(70))
-                        .append(" [").append(item.optString("kind")).append("]")
-                }
-            }
+        extractionInfo.text = buildString {
+            append("اطلاعات صفحه استخراج شد\\nعنوان: ").append(title)
+            if (artist.isNotBlank()) append("\\nسازنده: ").append(artist)
+            if (description.isNotBlank()) append("\\nتوضیحات: ").append(description.take(220))
+            if (image.isNotBlank()) append("\\nتصویر کاور: شناسایی شد")
+            if (expectedDurationMs > 0) append("\\nمدت آهنگ: ").append(expectedDurationMs / 1000).append(" ثانیه")
+            append("\\nروش دریافت: API رسمی دانلود Suno (M4A)")
         }
-        extractionInfo.text = summary
-        if (candidates == null || candidates.length() == 0) {
-            setWorking(false, "اطلاعات صفحه استخراج شد، اما فایل صوتی مستقیم و عمومی در صفحه پیدا نشد؛ از دانلود رسمی Suno استفاده کن.")
+        setWorking(true, "در حال درخواست لینک دانلود رسمی M4A از Suno…")
+        requestOfficialM4a(title, expectedDurationMs)
+    }
+
+    // Uses the same official endpoint and ready/processing protocol as Suno's web client.
+    // Authentication and download permissions remain enforced by Suno.
+    private fun requestOfficialM4a(title: String, expectedDurationMs: Long) {
+        val web = extractionWebView ?: run {
+            setWorking(false, "مرورگر داخلی آماده نیست.")
             return
         }
-        setWorking(true, "مرحلهٔ ۲ از ۲: منبع صوتی شناسایی شد؛ دریافت و بررسی فایل…")
-        val safeTitle = safeName(title)
-        thread {
-            var lastError = "منبع صوتی قابل دریافت نبود."
-            var saved = false
-            var savedFileName = ""
-            for (i in 0 until candidates.length()) {
-                val item = candidates.optJSONObject(i) ?: continue
-                val candidate = item.optString("url")
+        val jsTitle = JSONObject.quote(title)
+        val script = """
+            (function() {
+              const clipId = location.pathname.split('/').filter(Boolean).pop() || '';
+              const title = $jsTitle;
+              const expectedDurationMs = $expectedDurationMs;
+              const send = (data) => {
+                try { window.SunoDownloadBridge.onResult(JSON.stringify(data)); } catch (e) {}
+              };
+              (async () => {
                 try {
-                    val songId = songIdFromPage(extractionPageUrl)
-                    if (!isSunoAudio(candidate, songId)) continue
-                    savedFileName = safeTitle + audioExtension(candidate)
-                    saveRemote(candidate, savedFileName, extractionPageUrl, expectedDurationMs)
-                    saved = true
-                    break
-                } catch (e: Exception) { lastError = e.message ?: lastError }
+                  if (!/^[0-9a-f-]{36}$/i.test(clipId)) {
+                    send({ok:false,message:'شناسه آهنگ از صفحه استخراج نشد.'}); return;
+                  }
+                  for (let attempt = 0; attempt < 90; attempt++) {
+                    const response = await fetch('/api/download/clip/' + encodeURIComponent(clipId) + '?format=m4a', {
+                      method:'GET', credentials:'include', headers:{'Accept':'application/json'}
+                    });
+                    let body = null;
+                    try { body = await response.json(); } catch (_) {}
+                    const result = body && (body.data ?? body.error ?? body);
+                    if (!response.ok) {
+                      const detail = result && (result.detail || result.message);
+                      send({ok:false,message:'API رسمی Suno پاسخ HTTP ' + response.status + (detail ? ': ' + detail : '')});
+                      return;
+                    }
+                    if (result && result.status === 'ready' && result.download_url) {
+                      send({ok:true,downloadUrl:result.download_url,title,expectedDurationMs}); return;
+                    }
+                    if (result && result.status === 'error') {
+                      send({ok:false,message:result.detail || result.message || 'آماده‌سازی فایل ناموفق بود.'}); return;
+                    }
+                    if (result && result.reason && result.reason !== 'rate_limited' && result.ok === false) {
+                      send({ok:false,message:result.detail || result.message || result.reason}); return;
+                    }
+                    const delay = result && result.reason === 'rate_limited'
+                      ? 1200 + Math.floor(Math.random() * 900) : 2000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                  }
+                  send({ok:false,message:'آماده‌سازی دانلود توسط Suno بیش از حد طول کشید.'});
+                } catch (e) {
+                  send({ok:false,message:'ارتباط با API رسمی Suno ناموفق بود: ' + (e && e.message ? e.message : 'خطای ناشناخته')});
+                }
+              })();
+              return true;
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(script, null)
+    }
+
+    private inner class SunoDownloadBridge {
+        @JavascriptInterface
+        fun onResult(payload: String) {
+            ui.post {
+                if (!working) return@post
+                try {
+                    val result = JSONObject(payload)
+                    if (!result.optBoolean("ok")) {
+                        setWorking(false, "دانلود رسمی آماده نشد: " + result.optString("message", "خطای نامشخص"))
+                        return@post
+                    }
+                    val downloadUrl = result.optString("downloadUrl")
+                    val title = result.optString("title").ifBlank { "Suno-audio" }
+                    val expectedDurationMs = result.optLong("expectedDurationMs", 0L)
+                    if (!isOfficialDownloadUrl(downloadUrl)) {
+                        setWorking(false, "Suno آدرس دانلودی با دامنهٔ معتبر برنگرداند؛ فایل ذخیره نشد.")
+                        return@post
+                    }
+                    setWorking(true, "لینک رسمی آماده شد؛ در حال دریافت و اعتبارسنجی فایل کامل…")
+                    thread {
+                        try {
+                            val fileName = safeName(title) + ".m4a"
+                            saveRemote(downloadUrl, fileName, extractionPageUrl, expectedDurationMs)
+                            ui.post { setWorking(false, "دانلود رسمی کامل شد: $fileName در پوشه Music/Suno Studio ذخیره شد.") }
+                        } catch (e: Exception) {
+                            ui.post { setWorking(false, "دریافت فایل رسمی ناموفق بود: " + (e.message ?: "خطای نامشخص")) }
+                        }
+                    }
+                } catch (e: Exception) {
+                    setWorking(false, "پاسخ API دانلود Suno قابل‌خواندن نبود: " + (e.message ?: "خطا"))
+                }
             }
-            if (saved) ui.post { setWorking(false, "آهنگ کامل دریافت و ذخیره شد: $savedFileName در پوشه Music/Suno Studio.") }
-            else ui.post { setWorking(false, "اطلاعات آهنگ استخراج شد، اما دریافت منبع صوتی موفق نبود: $lastError") }
         }
     }
 
     private fun saveRemote(link: String, name: String, referer: String, expectedDurationMs: Long) {
         val songId = songIdFromPage(referer)
-        require(isSunoAudio(link, songId)) { "دامنه یا شناسهٔ فایل صوتی با صفحهٔ آهنگ مطابقت ندارد." }
+        require(isOfficialDownloadUrl(link)) { "آدرس دانلود رسمی Suno معتبر نیست." }
         val mimeType = audioMime(link)
         val uri = outputUri(name, mimeType)
         try {
@@ -315,7 +375,7 @@ class MainActivity : ComponentActivity() {
                 if (c.responseCode == 403) "سرور Suno/CDN درخواست دانلود مستقیم را با HTTP 403 رد کرد؛ احتمالاً این لینک به دسترسی مرورگر یا نشانی موقت نیاز دارد."
                 else "دریافت فایل ناموفق بود؛ HTTP " + c.responseCode
             }
-            require(isSunoAudio(c.url.toString(), songId)) { "مسیر دانلود به دامنه یا شناسهٔ غیرمجاز منتقل شد." }
+            require(isOfficialDownloadUrl(c.url.toString())) { "مسیر دانلود به دامنهٔ غیرمجاز منتقل شد." }
             val mime = (c.contentType ?: "").lowercase()
             require(mime.startsWith("audio/") || mime == "application/octet-stream") {
                 "پاسخ CDN فایل صوتی نیست (نوع محتوا: " + mime + "). ممکن است لینک منقضی یا آهنگ در دسترس نباشد."
@@ -342,6 +402,7 @@ class MainActivity : ComponentActivity() {
             }
             if (declaredSize >= 0) require(copied == declaredSize) { "دانلود ناقص بود؛ اندازهٔ فایل با مقدار اعلام‌شده برابر نیست." }
             c.disconnect()
+            validateM4aContainer(uri)
             publish(uri, copied)
             validateAudioDuration(uri, expectedDurationMs, copied)
             val savedName = querySavedName(uri)
@@ -507,6 +568,15 @@ class MainActivity : ComponentActivity() {
         return ""
     }
     private fun isSunoHost(host: String) = host.equals("suno.com", true) || host.endsWith(".suno.com", true)
+    private fun isOfficialDownloadUrl(raw: String): Boolean = try {
+        val u = URL(raw)
+        val host = u.host.lowercase()
+        val cloudfront = host.endsWith(".cloudfront.net")
+        val s3 = host.endsWith(".amazonaws.com") && host.split('.').any { it == "s3" || it.startsWith("s3-") }
+        val suno = isSunoHost(host) || host == "suno.ai" || host.endsWith(".suno.ai")
+        u.protocol == "https" && (cloudfront || s3 || suno)
+    } catch (_: Exception) { false }
+
     private fun songIdFromPage(raw: String): String =
         Regex("/song/([0-9a-fA-F-]{36})").find(raw)?.groupValues?.get(1) ?: ""
     private fun isSunoAudio(raw: String, songId: String = ""): Boolean = try {
@@ -529,6 +599,20 @@ class MainActivity : ComponentActivity() {
         ".aac" -> "audio/aac"
         else -> "audio/mp4"
     }
+    private fun validateM4aContainer(uri: Uri) {
+        val header = contentResolver.openInputStream(uri)?.use { input ->
+            ByteArray(32).also { buffer ->
+                val count = input.read(buffer)
+                if (count < 12) error("فایل دریافتی ساختار M4A ندارد.")
+            }
+        } ?: error("خواندن فایل دریافتی ممکن نشد.")
+        val hasFtyp = (4..(header.size - 8).coerceAtLeast(4)).any { i ->
+            header[i] == 'f'.code.toByte() && header[i + 1] == 't'.code.toByte() &&
+            header[i + 2] == 'y'.code.toByte() && header[i + 3] == 'p'.code.toByte()
+        }
+        require(hasFtyp) { "پاسخ دانلود، فایل M4A معتبر نیست؛ احتمالاً پاسخ خطا یا فایل جایگزین است." }
+    }
+
     private fun validateAudioDuration(uri: Uri, expectedDurationMs: Long, bytes: Long) {
         val retriever = android.media.MediaMetadataRetriever()
         var actualDurationMs = 0L
