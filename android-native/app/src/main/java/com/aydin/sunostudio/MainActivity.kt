@@ -190,10 +190,19 @@ class MainActivity : ComponentActivity() {
               });
               document.querySelectorAll('script:not([src])').forEach(el => {
                 const txt = el.textContent || '';
-                const re = /["'](?:audio_url|audioUrl|stream_audio_url|streamAudioUrl|audio_src|audioSrc)["']\s*:\s*["']([^"']+)["']/gi;
+                const re = /\\?["'](?:audio_url|audioUrl|stream_audio_url|streamAudioUrl|audio_src|audioSrc)\\?["']\\s*:\\s*\\?["']([^"']+)["']/gi;
                 let m;
                 while ((m = re.exec(txt)) !== null) {
-                  try { add(m[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/'), 'public-state:embedded-audio-url'); } catch(e) {}
+                  try { add(m[1].replace(/\\\\u0026/g, '&').replace(/\\\\\\//g, '/'), 'public-state:embedded-audio-url'); } catch(e) {}
+                }
+                // Suno exposes the playable public file under media_urls in the page's Flight state.
+                const mediaRe = /\\?["']media_urls\\?["']\\s*:\\s*\\[\\s*\\{[\\s\\S]*?\\?["']url\\?["']\\s*:\\s*\\?["']([^"']+)/gi;
+                while ((m = mediaRe.exec(txt)) !== null) {
+                  try { add(m[1].replace(/\\\\u0026/g, '&').replace(/\\\\\\//g, '/'), 'public-state:media_urls'); } catch(e) {}
+                }
+                if (txt.indexOf(location.pathname.split('/').pop()) >= 0) {
+                  const durationMatch = /\\?["']duration\\?["']\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)/i.exec(txt);
+                  if (durationMatch) expectedDuration = Math.max(expectedDuration, parseFloat(durationMatch[1]));
                 }
               });
               ['og:audio','og:audio:secure_url','twitter:player:stream'].forEach(k => {
@@ -312,7 +321,7 @@ class MainActivity : ComponentActivity() {
                 "پاسخ CDN فایل صوتی نیست (نوع محتوا: " + mime + "). ممکن است لینک منقضی یا آهنگ در دسترس نباشد."
             }
             val declaredSize = c.contentLengthLong
-            // Preserve tiny audio responses for inspection; they may be preview or placeholder files.
+            // Reject tiny preview/placeholder responses instead of presenting them as the full song.
             var copied = 0L
             val output = contentResolver.openOutputStream(uri, "w")
                 ?: error("اندروید نتوانست فایل خروجی را باز کند.")
