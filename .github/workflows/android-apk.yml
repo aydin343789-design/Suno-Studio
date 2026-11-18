@@ -1,4 +1,4 @@
-name: Build Suno Studio Android APK
+name: Build signed Suno Studio Android APK
 on:
   workflow_dispatch:
   push:
@@ -25,13 +25,29 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build debug APK
+      - name: Configure persistent release signing key
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.SIGNING_KEY_BASE64 }}
+        run: |
+          test -n "$SIGNING_KEY_BASE64" || { echo "Missing SIGNING_KEY_BASE64 repository secret"; exit 1; }
+          mkdir -p android-native/signing
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > android-native/signing/sunostudio-release.jks
+          test -s android-native/signing/sunostudio-release.jks
+      - name: Build signed release APK
         working-directory: android-native
-        run: gradle --no-daemon assembleDebug
-      - name: Upload APK artifact
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          test -n "$SIGNING_STORE_PASSWORD"
+          test -n "$SIGNING_KEY_ALIAS"
+          test -n "$SIGNING_KEY_PASSWORD"
+          gradle --no-daemon assembleRelease
+      - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Suno-Studio-native-debug-apk
-          path: android-native/app/build/outputs/apk/debug/app-debug.apk
+          name: Suno-Studio-signed-release-apk
+          path: android-native/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
