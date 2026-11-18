@@ -7,6 +7,11 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import org.json.JSONObject
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
@@ -32,6 +37,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var chosen: TextView
     private lateinit var busyBar: ProgressBar
+    private lateinit var extractionInfo: TextView
+    private var extractionWebView: WebView? = null
+    private var extractionAttempt = 0
+    private var extractionPageUrl = ""
     private var audioUri: Uri? = null
     private var working = false
 
@@ -79,8 +88,25 @@ class MainActivity : ComponentActivity() {
             background = rounded(Color.rgb(36, 38, 53))
         }
         page.addView(urlBox, params().apply { topMargin = dp(10); bottomMargin = dp(10) })
-        page.addView(button("بررسی و دانلود فایل صوتی", true) { download() }, params())
-        page.addView(text("فقط فایل عمومی و مستقیم Suno دریافت می‌شود؛ دور زدن ورود، پرداخت یا محدودیت محتوای خصوصی انجام نمی‌شود.", 12f, Color.GRAY, false).pad(0, 10, 0, 22))
+        page.addView(button("بارگذاری، استخراج اطلاعات و دانلود", true) { download() }, params())
+        extractionInfo = text("ابتدا صفحهٔ آهنگ بارگذاری و اطلاعات و منابع صوتی عمومی آن بررسی می‌شود.", 13f, Color.rgb(190, 178, 255), false).pad(0, 12, 0, 12)
+        page.addView(extractionInfo)
+        extractionWebView = WebView(this).apply {
+            visibility = View.INVISIBLE
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = true
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    if (isSunoHost(URL(url).host)) {
+                        extractionAttempt = 0
+                        schedulePageExtraction(view)
+                    }
+                }
+            }
+        }
+        page.addView(extractionWebView, LinearLayout.LayoutParams(1, 1))
+        page.addView(text("فقط اطلاعات و فایل‌هایی دریافت می‌شوند که از صفحهٔ عمومی و مسیر مجاز Suno در دسترس باشند.", 12f, Color.GRAY, false).pad(0, 10, 0, 22))
 
         page.addView(text("۲. تبدیل فایل‌های داخل گوشی", 19f, Color.WHITE, true).pad(0, 8, 0, 12))
         page.addView(text("فایل صوتی را انتخاب کن. تبدیل روی خود گوشی انجام می‌شود و اینترنت لازم ندارد.", 14f, Color.LTGRAY, false).pad(0, 0, 0, 10))
@@ -101,30 +127,105 @@ class MainActivity : ComponentActivity() {
         if (working) return
         val raw = urlBox.text.toString().trim()
         val pageUrl = try { URL(raw) } catch (_: Exception) { message("لطفاً لینک معتبر Suno وارد کن."); return }
-        if (pageUrl.protocol != "https" || !isSunoHost(pageUrl.host)) {
-            message("فقط لینک HTTPS از دامنهٔ رسمی suno.com پذیرفته می‌شود."); return
+        if (pageUrl.protocol != "https" || !isSunoHost(pageUrl.host) || !pageUrl.path.startsWith("/song/")) {
+            message("لطفاً لینک HTTPS صفحهٔ آهنگ از دامنهٔ رسمی suno.com وارد کن."); return
         }
-        setWorking(true, "در حال بررسی لینک عمومی Suno…")
-        thread {
+        extractionPageUrl = raw
+        extractionAttempt = 0
+        extractionInfo.text = "مرحلهٔ ۱ از ۲: صفحهٔ آهنگ در مرورگر داخلی بارگذاری می‌شود…"
+        setWorking(true, "در حال بارگذاری صفحهٔ عمومی آهنگ Suno…")
+        val web = extractionWebView ?: run { setWorking(false, "مرورگر داخلی آماده نیست."); return }
+        web.stopLoading()
+        web.loadUrl(raw)
+    }
+
+    private fun schedulePageExtraction(view: WebView) {
+        if (!working || extractionAttempt >= 8) return
+        extractionAttempt++
+        val script = """
+            (function() {
+              const meta = (sel) => document.querySelector(sel)?.content || '';
+              const title = meta('meta[property="og:title"]') || document.title || '';
+              const description = meta('meta[property="og:description"]') || meta('meta[name="description"]');
+              const image = meta('meta[property="og:image"]') || meta('meta[name="twitter:image"]');
+              const artist = meta('meta[name="author"]') || meta('meta[property="music:musician"]');
+              const candidates = [];
+              const add = (u, kind) => {
+                if (!u || typeof u !== 'string') return;
+                try {
+                  const x = new URL(u, location.href);
+                  if (x.protocol !== 'https:' || /^(blob:|data:)/i.test(u)) return;
+                  if (/\.m3u8($|\?)/i.test(x.href)) return;
+                  if (/\.(mp3|m4a|aac|wav|ogg|opus|flac)(\?|$)/i.test(x.href) || /audio/i.test(kind || '')) {
+                    if (!candidates.some(v => v.url === x.href)) candidates.push({url:x.href,kind:kind||''});
+                  }
+                } catch(e) {}
+              };
+              document.querySelectorAll('audio, audio source, video, video source').forEach(e => {
+                add(e.currentSrc || e.src || e.getAttribute('src'), e.type || e.tagName);
+              });
+              ['og:audio','og:audio:secure_url','twitter:player:stream'].forEach(k => {
+                const e = document.querySelector('meta[property="'+k+'"],meta[name="'+k+'"]');
+                if (e) add(e.content, k);
+              });
+              performance.getEntriesByType('resource').forEach(e => add(e.name, e.initiatorType));
+              return JSON.stringify({title,description,image,artist,url:location.href,candidates});
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(script) { encoded ->
+            if (!working) return@evaluateJavascript
             try {
-                // Only use a direct audio URL explicitly exposed by the public page metadata.
-                // Do not guess CDN URLs from song IDs or access private/restricted resources.
-                val doc = Jsoup.connect(raw).userAgent("Mozilla/5.0 Android SunoStudio").timeout(18000).get()
-                require(isSunoHost(URL(doc.location()).host)) { "صفحه به دامنهٔ دیگری منتقل شد." }
-                val keys = listOf("meta[property=og:audio]", "meta[property=og:audio:secure_url]", "meta[name=twitter:player:stream]")
-                var audio: String? = null
-                for (key in keys) {
-                    val candidate = doc.selectFirst(key)?.attr("content")?.trim()
-                    if (!candidate.isNullOrBlank() && isSunoAudio(candidate)) { audio = candidate; break }
-                }
-                require(audio != null) { "این صفحه نشانی مستقیم و عمومی صوتی ارائه نکرده است؛ از دانلود رسمی Suno استفاده کن." }
-                val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.take(80) ?: "Suno-audio"
-                val name = safeName(title) + ".mp3"
-                saveRemote(audio!!, name, raw)
-                ui.post { setWorking(false, "دانلود کامل شد: $name در Music/Suno Studio") }
-            } catch (e: Exception) {
-                ui.post { setWorking(false, e.message ?: "دانلود انجام نشد.") }
+                val jsonText = if (encoded == null || encoded == "null") "" else org.json.JSONTokener(encoded).nextValue() as? String ?: ""
+                if (jsonText.isNotBlank()) handlePageExtraction(jsonText)
+                else retryExtraction(view)
+            } catch (_: Exception) { retryExtraction(view) }
+        }
+    }
+
+    private fun retryExtraction(view: WebView) {
+        if (extractionAttempt < 8 && working) ui.postDelayed({ schedulePageExtraction(view) }, 2500)
+        else if (working) {
+            extractionInfo.text = "صفحه بارگذاری شد، اما منبع صوتی عمومی قابل‌شناسایی پیدا نشد."
+            setWorking(false, "استخراج انجام شد؛ صفحه منبع مستقیم و عمومی صوتی ارائه نکرد. از دانلود رسمی Suno استفاده کن.")
+        }
+    }
+
+    private fun handlePageExtraction(rawJson: String) {
+        val data = JSONObject(rawJson)
+        val title = data.optString("title").ifBlank { "عنوان در دسترس نیست" }
+        val artist = data.optString("artist")
+        val description = data.optString("description")
+        val image = data.optString("image")
+        val candidates = data.optJSONArray("candidates")
+        val summary = buildString {
+            append("استخراج اطلاعات صفحه انجام شد\nعنوان: ").append(title)
+            if (artist.isNotBlank()) append("\nسازنده: ").append(artist)
+            if (description.isNotBlank()) append("\nتوضیحات: ").append(description.take(220))
+            if (image.isNotBlank()) append("\nتصویر کاور: شناسایی شد")
+            append("\nمنابع صوتی مستقیم: ").append(candidates?.length() ?: 0)
+        }
+        extractionInfo.text = summary
+        if (candidates == null || candidates.length() == 0) {
+            setWorking(false, "اطلاعات صفحه استخراج شد، اما فایل صوتی مستقیم و عمومی در صفحه پیدا نشد؛ از دانلود رسمی Suno استفاده کن.")
+            return
+        }
+        setWorking(true, "مرحلهٔ ۲ از ۲: منبع صوتی شناسایی شد؛ دریافت و بررسی فایل…")
+        val safeTitle = safeName(title)
+        thread {
+            var lastError = "منبع صوتی قابل دریافت نبود."
+            var saved = false
+            for (i in 0 until candidates.length()) {
+                val item = candidates.optJSONObject(i) ?: continue
+                val candidate = item.optString("url")
+                try {
+                    if (!isSunoAudio(candidate)) continue
+                    saveRemote(candidate, safeTitle + ".mp3", extractionPageUrl)
+                    saved = true
+                    break
+                } catch (e: Exception) { lastError = e.message ?: lastError }
             }
+            if (saved) ui.post { setWorking(false, "دانلود کامل شد: $safeTitle.mp3 در Music/Suno Studio") }
+            else ui.post { setWorking(false, "اطلاعات آهنگ استخراج شد، اما دریافت منبع صوتی موفق نبود: $lastError") }
         }
     }
 
@@ -140,6 +241,11 @@ class MainActivity : ComponentActivity() {
             c.setRequestProperty("Accept", "audio/avif,audio/webm,audio/apng,audio/*,*/*;q=0.8")
             c.setRequestProperty("Referer", referer)
             c.setRequestProperty("Origin", "https://suno.com")
+            c.setRequestProperty("Sec-Fetch-Dest", "audio")
+            c.setRequestProperty("Sec-Fetch-Mode", "cors")
+            c.setRequestProperty("Accept-Encoding", "identity")
+            val browserCookie = CookieManager.getInstance().getCookie(link)
+            if (!browserCookie.isNullOrBlank()) c.setRequestProperty("Cookie", browserCookie)
             c.connect()
             require(c.responseCode in 200..299) {
                 if (c.responseCode == 403) "سرور Suno/CDN درخواست دانلود مستقیم را با HTTP 403 رد کرد؛ احتمالاً این لینک به دسترسی مرورگر یا نشانی موقت نیاز دارد."
