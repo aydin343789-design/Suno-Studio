@@ -179,10 +179,10 @@ class MainActivity : ComponentActivity() {
               });
               document.querySelectorAll('script:not([src])').forEach(el => {
                 const txt = el.textContent || '';
-                const re = /["'](?:audio_url|audioUrl|stream_audio_url|streamAudioUrl|audio_src|audioSrc)["']\\s*:\\s*["']([^"']+)["']/gi;
+                const re = /["'](?:audio_url|audioUrl|stream_audio_url|streamAudioUrl|audio_src|audioSrc)["']\s*:\s*["']([^"']+)["']/gi;
                 let m;
                 while ((m = re.exec(txt)) !== null) {
-                  try { add(m[1].replace(/\\\\u0026/g, '&').replace(/\\\\\\//g, '/'), 'public-state:embedded-audio-url'); } catch(e) {}
+                  try { add(m[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/'), 'public-state:embedded-audio-url'); } catch(e) {}
                 }
               });
               ['og:audio','og:audio:secure_url','twitter:player:stream'].forEach(k => {
@@ -231,7 +231,15 @@ class MainActivity : ComponentActivity() {
             if (artist.isNotBlank()) append("\nسازنده: ").append(artist)
             if (description.isNotBlank()) append("\nتوضیحات: ").append(description.take(220))
             if (image.isNotBlank()) append("\nتصویر کاور: شناسایی شد")
-            append("\nمنابع صوتی مستقیم: ").append(candidates?.length() ?: 0)
+            append("\nمنابع صوتی شناسایی‌شده: ").append(candidates?.length() ?: 0)
+            if (candidates != null) {
+                for (i in 0 until minOf(candidates.length(), 3)) {
+                    val item = candidates.optJSONObject(i) ?: continue
+                    val u = try { URL(item.optString("url")) } catch (_: Exception) { null }
+                    if (u != null) append("\nنامزد ").append(i + 1).append(": ").append(u.host).append(u.path.takeLast(70))
+                        .append(" [").append(item.optString("kind")).append("]")
+                }
+            }
         }
         extractionInfo.text = summary
         if (candidates == null || candidates.length() == 0) {
@@ -287,7 +295,7 @@ class MainActivity : ComponentActivity() {
             }
             val declaredSize = c.contentLengthLong
             require(declaredSize < 0 || declaredSize >= 8192) {
-                "فایل برگشتی بیش از حد کوچک است و احتمالاً صدای جایگزین/خطاست، نه آهنگ اصلی."
+                "منبع شناسایی‌شده فایل کامل نیست: اندازه $declaredSize بایت، نوع $mime، مسیر \${c.url.path}. این منبع احتمالاً پیش‌نمایش یا صدای جایگزین است."
             }
             var copied = 0L
             contentResolver.openOutputStream(uri, "w")!!.use { out ->
