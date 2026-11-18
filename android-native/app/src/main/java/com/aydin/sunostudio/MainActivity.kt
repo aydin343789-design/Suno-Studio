@@ -146,6 +146,7 @@ class MainActivity : ComponentActivity() {
               const image = meta('meta[property="og:image"]') || meta('meta[name="twitter:image"]');
               const artist = meta('meta[name="author"]') || meta('meta[property="music:musician"]');
               const candidates = [];
+              let expectedDuration = 0;
               const add = (u, kind) => {
                 if (!u || typeof u !== 'string') return;
                 try {
@@ -167,8 +168,22 @@ class MainActivity : ComponentActivity() {
                   if (/(audio|stream).*(url|src)|(url|src).*(audio|stream)/i.test(key || '')) add(value, 'public-state:' + key);
                   return;
                 }
-                if (Array.isArray(value)) { value.forEach(v => scanPublicState(v, key, depth + 1)); return; }
-                if (typeof value === 'object') Object.keys(value).forEach(k => scanPublicState(value[k], k, depth + 1));
+                if (Array.isArray(value)) {
+                  if (/^media_urls$/i.test(key || '')) {
+                    value.forEach(v => {
+                      if (v && typeof v.url === 'string') add(v.url, 'media_urls:' + (v.content_type || ''));
+                    });
+                  }
+                  value.forEach(v => scanPublicState(v, key, depth + 1));
+                  return;
+                }
+                if (typeof value === 'object') {
+                  if (typeof value.duration === 'number' &&
+                      (value.id === location.pathname.split('/').pop() || value.entity_type === 'song_schema')) {
+                    expectedDuration = value.duration;
+                  }
+                  Object.keys(value).forEach(k => scanPublicState(value[k], k, depth + 1));
+                }
               };
               document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__').forEach(el => {
                 try { scanPublicState(JSON.parse(el.textContent || ''), 'page-state', 0); } catch(e) {}
@@ -186,7 +201,7 @@ class MainActivity : ComponentActivity() {
                 if (e) add(e.content, k);
               });
               performance.getEntriesByType('resource').forEach(e => add(e.name, e.initiatorType));
-              return JSON.stringify({title,description,image,artist,url:location.href,candidates});
+              return JSON.stringify({title,description,image,artist,url:location.href,candidates,expectedDuration});
             })();
         """.trimIndent()
         view.evaluateJavascript(script) { encoded ->
@@ -222,11 +237,13 @@ class MainActivity : ComponentActivity() {
         val description = data.optString("description")
         val image = data.optString("image")
         val candidates = data.optJSONArray("candidates")
+        val expectedDurationMs = (data.optDouble("expectedDuration", 0.0) * 1000.0).toLong()
         val summary = buildString {
             append("استخراج اطلاعات صفحه انجام شد\nعنوان: ").append(title)
             if (artist.isNotBlank()) append("\nسازنده: ").append(artist)
             if (description.isNotBlank()) append("\nتوضیحات: ").append(description.take(220))
             if (image.isNotBlank()) append("\nتصویر کاور: شناسایی شد")
+            if (expectedDurationMs > 0) append("\nمدت آهنگ: ").append(expectedDurationMs / 1000).append(" ثانیه")
             append("\nمنابع صوتی شناسایی‌شده: ").append(candidates?.length() ?: 0)
             if (candidates != null) {
                 for (i in 0 until minOf(candidates.length(), 3)) {
@@ -247,24 +264,29 @@ class MainActivity : ComponentActivity() {
         thread {
             var lastError = "منبع صوتی قابل دریافت نبود."
             var saved = false
+            var savedFileName = ""
             for (i in 0 until candidates.length()) {
                 val item = candidates.optJSONObject(i) ?: continue
                 val candidate = item.optString("url")
                 try {
-                    if (!isSunoAudio(candidate)) continue
-                    saveRemote(candidate, safeTitle + ".mp3", extractionPageUrl)
+                    val songId = songIdFromPage(extractionPageUrl)
+                    if (!isSunoAudio(candidate, songId)) continue
+                    savedFileName = safeTitle + audioExtension(candidate)
+                    saveRemote(candidate, savedFileName, extractionPageUrl, expectedDurationMs)
                     saved = true
                     break
                 } catch (e: Exception) { lastError = e.message ?: lastError }
             }
-            if (saved) ui.post { setWorking(false, "پاسخ صوتی دریافت و ذخیره شد: $safeTitle.mp3 در Music/Suno Studio (حتی اگر کوتاه یا نمونه باشد).") }
+            if (saved) ui.post { setWorking(false, "آهنگ کامل دریافت و ذخیره شد: $savedFileName در پوشه Music/Suno Studio.") }
             else ui.post { setWorking(false, "اطلاعات آهنگ استخراج شد، اما دریافت منبع صوتی موفق نبود: $lastError") }
         }
     }
 
-    private fun saveRemote(link: String, name: String, referer: String) {
-        require(isSunoAudio(link)) { "دامنهٔ فایل صوتی مجاز نیست." }
-        val uri = outputUri(name, "audio/mpeg")
+    private fun saveRemote(link: String, name: String, referer: String, expectedDurationMs: Long) {
+        val songId = songIdFromPage(referer)
+        require(isSunoAudio(link, songId)) { "دامنه یا شناسهٔ فایل صوتی با صفحهٔ آهنگ مطابقت ندارد." }
+        val mimeType = audioMime(link)
+        val uri = outputUri(name, mimeType)
         try {
             val c = URL(link).openConnection() as HttpURLConnection
             c.instanceFollowRedirects = true
@@ -284,7 +306,7 @@ class MainActivity : ComponentActivity() {
                 if (c.responseCode == 403) "سرور Suno/CDN درخواست دانلود مستقیم را با HTTP 403 رد کرد؛ احتمالاً این لینک به دسترسی مرورگر یا نشانی موقت نیاز دارد."
                 else "دریافت فایل ناموفق بود؛ HTTP " + c.responseCode
             }
-            require(isSunoAudio(c.url.toString())) { "مسیر دانلود به دامنهٔ غیرمجاز منتقل شد." }
+            require(isSunoAudio(c.url.toString(), songId)) { "مسیر دانلود به دامنه یا شناسهٔ غیرمجاز منتقل شد." }
             val mime = (c.contentType ?: "").lowercase()
             require(mime.startsWith("audio/") || mime == "application/octet-stream") {
                 "پاسخ CDN فایل صوتی نیست (نوع محتوا: " + mime + "). ممکن است لینک منقضی یا آهنگ در دسترس نباشد."
@@ -306,12 +328,13 @@ class MainActivity : ComponentActivity() {
                     out.flush()
                 }
             }
-            require(copied > 0) {
-                "پاسخ صوتی خالی بود؛ هیچ داده‌ای دریافت نشد."
+            require(copied > 32_000L) {
+                "فایل دریافتی بسیار کوچک است و احتمالاً نمونهٔ کوتاه یا فایل جایگزین است؛ آهنگ ذخیره نشد."
             }
             if (declaredSize >= 0) require(copied == declaredSize) { "دانلود ناقص بود؛ اندازهٔ فایل با مقدار اعلام‌شده برابر نیست." }
             c.disconnect()
             publish(uri, copied)
+            validateAudioDuration(uri, expectedDurationMs, copied)
             val savedName = querySavedName(uri)
             require(savedName.isNotBlank()) { "فایل دریافت شد، اما در حافظهٔ رسانه‌ای گوشی قابل مشاهده نیست." }
         } catch (e: Exception) {
@@ -475,10 +498,51 @@ class MainActivity : ComponentActivity() {
         return ""
     }
     private fun isSunoHost(host: String) = host.equals("suno.com", true) || host.endsWith(".suno.com", true)
-    private fun isSunoAudio(raw: String): Boolean = try {
+    private fun songIdFromPage(raw: String): String =
+        Regex("/song/([0-9a-fA-F-]{36})").find(raw)?.groupValues?.get(1) ?: ""
+    private fun isSunoAudio(raw: String, songId: String = ""): Boolean = try {
         val u = URL(raw)
-        u.protocol == "https" && (isSunoHost(u.host) || u.host.equals("suno.ai", true) || u.host.endsWith(".suno.ai", true))
+        val sunoOwned = isSunoHost(u.host) || u.host.equals("suno.ai", true) || u.host.endsWith(".suno.ai", true)
+        val verifiedPublicMedia = u.host.equals("d2lwuy8qc234o3.cloudfront.net", true) &&
+            songId.isNotBlank() && u.path.contains(songId) &&
+            u.path.matches(Regex(".*\\.(m4a|mp3|aac|wav|ogg|opus|flac)$", RegexOption.IGNORE_CASE))
+        u.protocol == "https" && (sunoOwned || verifiedPublicMedia)
     } catch (_: Exception) { false }
+    private fun audioExtension(raw: String): String {
+        val path = try { URL(raw).path.lowercase() } catch (_: Exception) { "" }
+        return listOf(".m4a", ".mp3", ".aac", ".wav", ".ogg", ".opus", ".flac")
+            .firstOrNull { path.endsWith(it) } ?: ".m4a"
+    }
+    private fun audioMime(raw: String): String = when (audioExtension(raw)) {
+        ".mp3" -> "audio/mpeg"
+        ".wav" -> "audio/wav"
+        ".ogg", ".opus" -> "audio/ogg"
+        ".aac" -> "audio/aac"
+        else -> "audio/mp4"
+    }
+    private fun validateAudioDuration(uri: Uri, expectedDurationMs: Long, bytes: Long) {
+        val retriever = android.media.MediaMetadataRetriever()
+        var actualDurationMs = 0L
+        try {
+            retriever.setDataSource(this, uri)
+            actualDurationMs = retriever.extractMetadata(
+                android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+            )?.toLongOrNull() ?: 0L
+        } catch (_: Exception) {
+            // Some Android 10 builds cannot inspect Opus-in-M4A metadata; size validation remains active.
+        } finally {
+            try { retriever.release() } catch (_: Exception) {}
+        }
+        require(bytes > 32_000L) { "فایل صوتی بیش از حد کوچک است." }
+        if (expectedDurationMs > 0L && actualDurationMs > 0L) {
+            val tolerance = maxOf(5000L, (expectedDurationMs * 0.03).toLong())
+            require(kotlin.math.abs(actualDurationMs - expectedDurationMs) <= tolerance) {
+                "مدت فایل با مدت آهنگ صفحه مطابقت ندارد؛ مورد کوتاه/جایگزین ذخیره نشد."
+            }
+        } else if (actualDurationMs in 1L..10_000L) {
+            error("فایل فقط چند ثانیه است و آهنگ کامل نیست؛ ذخیره نشد.")
+        }
+    }
     private fun safeName(s: String) = s.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").trim().take(70).ifBlank { "Suno-audio" }
     private fun displayName(uri: Uri): String {
         contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use {
