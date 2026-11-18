@@ -1,6 +1,6 @@
 package com.aydin.sunostudio
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
 import android.content.ContentValues
 import android.media.AudioFormat
 import android.media.MediaCodec
@@ -26,7 +26,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var urlBox: EditText
     private lateinit var status: TextView
