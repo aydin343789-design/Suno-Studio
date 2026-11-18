@@ -215,7 +215,7 @@ class MainActivity : Activity() {
                             val pcm = java.nio.ByteBuffer.allocate(floats.remaining() * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                             while (floats.hasRemaining()) {
                                 val sample = floats.get().coerceIn(-1f, 1f)
-                                pcm.putShort((sample * if (sample < 0f) 32768f else 32767f).toInt().toShort())
+                                pcm.putShort((sample * (if (sample < 0f) 32768f else 32767f)).toInt().toShort())
                             }
                             out.write(pcm.array())
                             total += pcm.position()
