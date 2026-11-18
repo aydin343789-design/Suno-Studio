@@ -1,4 +1,5 @@
 name: Build signed Suno Studio Android APK
+# Release signing uses the persistent repository Actions secrets.
 on:
   workflow_dispatch:
   push:
