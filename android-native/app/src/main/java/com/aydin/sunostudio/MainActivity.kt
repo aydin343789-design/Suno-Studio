@@ -53,8 +53,19 @@ class MainActivity : ComponentActivity() {
         }
         val scroll = ScrollView(this)
         scroll.addView(page)
-        page.addView(text("♫  SUNO STUDIO", 24f, Color.WHITE, true))
-        page.addView(text("دانلودر و مبدل صوتی مستقل از سرور", 14f, Color.LTGRAY, false).pad(0, 6, 0, 24))
+        val brand = ImageView(this).apply {
+            setImageResource(R.drawable.brand_mark)
+            layoutParams = LinearLayout.LayoutParams(dp(104), dp(104)).apply {
+                gravity = Gravity.CENTER
+                bottomMargin = dp(6)
+            }
+            contentDescription = "Suno Studio"
+        }
+        page.addView(brand)
+        page.addView(text("SUNO STUDIO", 25f, Color.WHITE, true).apply { gravity = Gravity.CENTER })
+        page.addView(text("دانلودر و مبدل صوتی مستقل از سرور", 14f, Color.LTGRAY, false).apply {
+            gravity = Gravity.CENTER
+        }.pad(0, 6, 0, 24))
 
         page.addView(text("۱. دانلود از لینک عمومی Suno", 19f, Color.WHITE, true).pad(0, 8, 0, 12))
         page.addView(text("لینک صفحهٔ آهنگ یا لینک اشتراک‌گذاری:", 14f, Color.LTGRAY, false))
