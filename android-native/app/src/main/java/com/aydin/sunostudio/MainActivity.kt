@@ -9,6 +9,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONObject
 import android.os.Bundle
+import android.os.Build
+import android.content.pm.PackageManager
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -232,10 +234,18 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshTracks() {
         if (!::tracksContainer.isInitialized) return
+        val audioPermission = if (Build.VERSION.SDK_INT >= 33) "android.permission.READ_MEDIA_AUDIO" else "android.permission.READ_EXTERNAL_STORAGE"
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(audioPermission) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(audioPermission), 4102)
+            tracksContainer.removeAllViews()
+            tracksContainer.addView(text("برای نمایش و پخش آهنگ‌ها، اجازه دسترسی به فایل‌های صوتی را بده.", 12f, Color.LTGRAY, false))
+            return
+        }
         tracksContainer.removeAllViews()
         trackUris.clear()
         val projection = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME)
         val selection = MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
+        try {
         contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, projection, selection,
             arrayOf(Environment.DIRECTORY_MUSIC + "/Suno Studio%"), MediaStore.Audio.Media.DATE_ADDED + " DESC")?.use { c ->
             while (c.moveToNext()) {
@@ -247,6 +257,16 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (trackUris.isEmpty()) tracksContainer.addView(text("هنوز فایلی در این پوشه پیدا نشد.", 12f, Color.GRAY, false))
+        } catch (e: SecurityException) {
+            tracksContainer.addView(text("دسترسی به فایل‌های صوتی داده نشده است.", 12f, Color.LTGRAY, false))
+        } catch (e: Exception) {
+            tracksContainer.addView(text("خواندن فهرست آهنگ‌ها ناموفق بود: " + (e.message ?: ""), 12f, Color.LTGRAY, false))
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 4102 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) refreshTracks()
     }
 
     private fun playTrack(uri: Uri, name: String) {
