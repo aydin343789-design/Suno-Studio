@@ -2,10 +2,6 @@ package com.aydin.sunostudio
 
 import androidx.activity.ComponentActivity
 import android.content.ContentValues
-import android.media.AudioFormat
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
 import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -18,15 +14,13 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.view.Gravity
+import android.widget.FrameLayout
 import android.view.View
 import android.widget.*
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import androidx.activity.result.contract.ActivityResultContracts
 import org.jsoup.Jsoup
-import java.io.File
-import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
@@ -41,83 +35,245 @@ class MainActivity : ComponentActivity() {
     private var extractionWebView: WebView? = null
     private var extractionAttempt = 0
     private var extractionPageUrl = ""
-    private var audioUri: Uri? = null
     private var working = false
 
-    private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            audioUri = uri
-            try { contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
-            chosen.text = "فایل انتخاب‌شده: " + displayName(uri)
-            message("فایل برای تبدیل آفلاین آماده است.")
-        }
-    }
+    private lateinit var root: LinearLayout
+    private lateinit var playerTitle: TextView
+    private lateinit var playerStatus: TextView
+    private lateinit var seekBar: SeekBar
+    private var mediaPlayer: android.media.MediaPlayer? = null
+    private var selectedTrack: Uri? = null
+    private val trackUris = mutableListOf<Uri>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val page = LinearLayout(this).apply {
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(24))
             setBackgroundColor(Color.rgb(17, 18, 27))
         }
+        val content = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(6), dp(7), dp(6), dp(7))
+            setBackgroundColor(Color.rgb(25, 26, 39))
+        }
+        root.addView(content)
+        root.addView(nav, LinearLayout.LayoutParams(-1, dp(68)))
+        val pages = listOf("Suno", "Instagram", "YouTube", "TikTok")
+        val icons = listOf("♫", "◎", "▶", "♪")
+        fun showPage(index: Int) {
+            content.removeAllViews()
+            val page = when (index) {
+                0 -> buildSunoPage()
+                else -> buildSocialPage(pages[index], index)
+            }
+            content.addView(page)
+            for (i in 0 until nav.childCount) {
+                val b = nav.getChildAt(i) as TextView
+                b.setTextColor(if (i == index) Color.rgb(190, 160, 255) else Color.LTGRAY)
+                b.setTypeface(null, if (i == index) Typeface.BOLD else Typeface.NORMAL)
+            }
+        }
+        pages.forEachIndexed { index, name ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setOnClickListener { showPage(index) }
+            }
+            item.addView(text(icons[index], 20f, Color.WHITE, true).apply { gravity = Gravity.CENTER })
+            item.addView(text(name, 11f, Color.LTGRAY, false).apply { gravity = Gravity.CENTER })
+            nav.addView(item, LinearLayout.LayoutParams(0, -1, 1f))
+        }
+        setContentView(root)
+        showPage(0)
+    }
+
+    private fun buildSunoPage(): View {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(18), dp(18), dp(12))
+        }
         val scroll = ScrollView(this)
-        scroll.addView(page)
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(body)
         val brand = ImageView(this).apply {
             setImageResource(R.drawable.brand_mark)
-            layoutParams = LinearLayout.LayoutParams(dp(104), dp(104)).apply {
-                gravity = Gravity.CENTER
-                bottomMargin = dp(6)
-            }
+            layoutParams = LinearLayout.LayoutParams(dp(76), dp(76)).apply { gravity = Gravity.CENTER }
             contentDescription = "Suno Studio"
         }
-        page.addView(brand)
-        page.addView(text("SUNO STUDIO", 25f, Color.WHITE, true).apply { gravity = Gravity.CENTER })
-        page.addView(text("دانلودر و مبدل صوتی مستقل از سرور", 14f, Color.LTGRAY, false).apply {
+        body.addView(brand)
+        body.addView(text("SUNO STUDIO", 23f, Color.WHITE, true).apply { gravity = Gravity.CENTER })
+        body.addView(text("دانلود آهنگ و پخش درون برنامه", 13f, Color.LTGRAY, false).apply {
             gravity = Gravity.CENTER
-        }.pad(0, 6, 0, 24))
-
-        page.addView(text("۱. دانلود از لینک عمومی Suno", 19f, Color.WHITE, true).pad(0, 8, 0, 12))
-        page.addView(text("لینک صفحهٔ آهنگ یا لینک اشتراک‌گذاری:", 14f, Color.LTGRAY, false))
+        }.pad(0, 4, 0, 18))
+        body.addView(text("لینک آهنگ Suno", 17f, Color.WHITE, true).pad(0, 4, 0, 8))
         urlBox = EditText(this).apply {
             hint = "https://suno.com/song/..."
-            setSingleLine(true)
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setSingleLine(true); textSize = 14f; setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY); setPadding(dp(12), dp(12), dp(12), dp(12))
             background = rounded(Color.rgb(36, 38, 53))
         }
-        page.addView(urlBox, params().apply { topMargin = dp(10); bottomMargin = dp(10) })
-        page.addView(button("بارگذاری، استخراج اطلاعات و دانلود", true) { download() }, params())
-        extractionInfo = text("ابتدا صفحهٔ آهنگ بارگذاری و اطلاعات و منابع صوتی عمومی آن بررسی می‌شود.", 13f, Color.rgb(190, 178, 255), false).pad(0, 12, 0, 12)
-        page.addView(extractionInfo)
+        body.addView(urlBox, params().apply { bottomMargin = dp(10) })
+        body.addView(button("استخراج و دانلود آهنگ", true) { download() }, params())
+        extractionInfo = text("لینک عمومی آهنگ را وارد کن.", 13f, Color.rgb(190, 178, 255), false).pad(0, 12, 0, 8)
+        body.addView(extractionInfo)
         extractionWebView = WebView(this).apply {
-            visibility = View.INVISIBLE
+            visibility = View.GONE
             addJavascriptInterface(SunoDownloadBridge(), "SunoDownloadBridge")
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = true
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
-                    if (isSunoHost(URL(url).host)) {
-                        extractionAttempt = 0
-                        schedulePageExtraction(view)
-                    }
+                    if (isSunoHost(URL(url).host)) { extractionAttempt = 0; schedulePageExtraction(view) }
                 }
             }
         }
-        page.addView(extractionWebView, LinearLayout.LayoutParams(1, 1))
-
-        page.addView(text("۲. تبدیل فایل‌های داخل گوشی", 19f, Color.WHITE, true).pad(0, 8, 0, 12))
-        page.addView(button("انتخاب فایل صوتی", false) { if (!working) picker.launch(arrayOf("audio/*")) }, params())
-        chosen = text("هنوز فایلی انتخاب نشده است.", 13f, Color.GRAY, false).pad(0, 12, 0, 12)
-        page.addView(chosen)
-        page.addView(button("تبدیل به WAV و ذخیره در گوشی", true) { convert() }, params())
+        body.addView(extractionWebView, LinearLayout.LayoutParams(1, 1))
+        body.addView(text("پخش فایل‌های دانلودشده", 18f, Color.WHITE, true).pad(0, 18, 0, 8))
+        playerTitle = text("هنوز آهنگی انتخاب نشده", 14f, Color.WHITE, true).pad(0, 6, 0, 4)
+        body.addView(playerTitle)
+        playerStatus = text("یک فایل از فهرست زیر انتخاب کن.", 12f, Color.LTGRAY, false)
+        body.addView(playerStatus)
+        seekBar = SeekBar(this)
+        body.addView(seekBar)
+        val controls = LinearLayout(this).apply { gravity = Gravity.CENTER; orientation = LinearLayout.HORIZONTAL }
+        controls.addView(button("⏮ ۱۰ ثانیه", false) { seekBy(-10000) }, LinearLayout.LayoutParams(0, -2, 1f))
+        controls.addView(button("▶ / توقف", true) { togglePlayback() }, LinearLayout.LayoutParams(0, -2, 1f))
+        controls.addView(button("۱۰ ثانیه ⏭", false) { seekBy(10000) }, LinearLayout.LayoutParams(0, -2, 1f))
+        body.addView(controls)
+        body.addView(button("به‌روزرسانی فهرست آهنگ‌ها", false) { refreshTracks() }.padTop(8), params())
+        val listHeader = text("فایل‌های پوشه Music/Suno Studio", 13f, Color.LTGRAY, true).pad(0, 12, 0, 6)
+        body.addView(listHeader)
+        tracksContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(tracksContainer)
+        page.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         busyBar = ProgressBar(this).apply { visibility = View.GONE }
-        page.addView(busyBar, params())
-        status = text("آماده به کار", 14f, Color.rgb(190, 178, 255), true).pad(0, 12, 0, 0)
+        page.addView(busyBar)
+        status = text("آماده به کار", 13f, Color.rgb(190, 178, 255), true).pad(0, 8, 0, 0)
         page.addView(status)
-        setContentView(scroll)
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) mediaPlayer?.let { if (it.isPlaying || it.duration > 0) it.seekTo(progress) }
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        refreshTracks()
+        return page
+    }
+
+    private lateinit var tracksContainer: LinearLayout
+
+    private fun buildSocialPage(service: String, index: Int): View {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(28), dp(20), dp(18))
+        }
+        page.addView(text(service, 25f, Color.WHITE, true).pad(0, 4, 0, 8))
+        page.addView(text("دانلودر $service", 16f, Color.rgb(190, 178, 255), true).pad(0, 0, 0, 18))
+        val field = EditText(this).apply {
+            hint = "لینک پست یا لینک مستقیم فایل"
+            setSingleLine(true); textSize = 14f; setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY); setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = rounded(Color.rgb(36, 38, 53))
+        }
+        page.addView(field, params().apply { bottomMargin = dp(12) })
+        page.addView(button("دانلود فایل مستقیم", true) {
+            downloadDirectMedia(field.text.toString().trim(), service)
+        }, params())
+        page.addView(button("باز کردن لینک در مرورگر", false) {
+            val raw = field.text.toString().trim()
+            try {
+                val u = URL(raw)
+                if (u.protocol != "https") error("فقط لینک HTTPS مجاز است.")
+                startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(raw)))
+            } catch (e: Exception) { message("لینک معتبر وارد کن: " + (e.message ?: "")) }
+        }.padTop(8), params())
+        page.addView(text(
+            "نکته: لینک صفحهٔ پست با لینک مستقیم فایل فرق دارد. این نسخه فقط فایل‌های مستقیم و عمومی را دریافت می‌کند؛ دانلود از محتوای خصوصی، نیازمند ورود، DRM یا محدودیت‌های خود پلتفرم دور زده نمی‌شود. برای YouTube لینک صفحه به‌تنهایی لینک مستقیم MP4 نیست.",
+            13f, Color.LTGRAY, false
+        ).pad(0, 20, 0, 0))
+        page.addView(text("فایل‌های دانلودشده در پوشهٔ Download گوشی ذخیره می‌شوند.", 12f, Color.GRAY, false).pad(0, 12, 0, 0))
+        return page
+    }
+
+    private fun downloadDirectMedia(raw: String, service: String) {
+        try {
+            val u = URL(raw)
+            require(u.protocol == "https") { "فقط HTTPS مجاز است." }
+            val ext = u.path.substringAfterLast('.', "").lowercase()
+            require(ext in setOf("mp4", "webm", "mov", "mp3", "m4a", "aac", "wav", "ogg")) {
+                "این آدرس، لینک مستقیم فایل رسانه‌ای نیست؛ لینک صفحهٔ پست را نمی‌توان مستقیماً دانلود کرد."
+            }
+            val host = u.host.lowercase()
+            require(host.endsWith("instagram.com") || host.endsWith("cdninstagram.com") ||
+                host.endsWith("youtube.com") || host.endsWith("googlevideo.com") ||
+                host.endsWith("youtu.be") || host.endsWith("tiktok.com") ||
+                host.endsWith("tiktokcdn.com") || host.endsWith("tiktokv.com") ||
+                host.endsWith("suno.com") || host.endsWith("cloudfront.net") ||
+                host.endsWith("amazonaws.com")) { "دامنهٔ لینک با این دانلودر سازگار نیست." }
+            val request = android.app.DownloadManager.Request(Uri.parse(raw))
+                .setTitle("$service media")
+                .setDescription("در حال دانلود فایل رسانه‌ای مستقیم")
+                .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeName("$service-" + System.currentTimeMillis()) + ".$ext")
+                .setAllowedOverMetered(true).setAllowedOverRoaming(false)
+            val manager = getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager
+            manager.enqueue(request)
+            message("درخواست دانلود مستقیم $service ثبت شد؛ نتیجه را در اعلان‌های اندروید ببین.")
+        } catch (e: Exception) { message("دانلود انجام نشد: " + (e.message ?: "لینک نامعتبر")) }
+    }
+
+    private fun refreshTracks() {
+        if (!::tracksContainer.isInitialized) return
+        tracksContainer.removeAllViews()
+        trackUris.clear()
+        val projection = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME)
+        val selection = MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
+        contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, projection, selection,
+            arrayOf(Environment.DIRECTORY_MUSIC + "/Suno Studio%"), MediaStore.Audio.Media.DATE_ADDED + " DESC")?.use { c ->
+            while (c.moveToNext()) {
+                val uri = Uri.withAppendedPath(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    c.getLong(0).toString())
+                val name = c.getString(1) ?: "Audio"
+                trackUris.add(uri)
+                tracksContainer.addView(button("♫  $name", false) { playTrack(uri, name) }, params().apply { bottomMargin = dp(5) })
+            }
+        }
+        if (trackUris.isEmpty()) tracksContainer.addView(text("هنوز فایلی در این پوشه پیدا نشد.", 12f, Color.GRAY, false))
+    }
+
+    private fun playTrack(uri: Uri, name: String) {
+        try {
+            mediaPlayer?.release()
+            mediaPlayer = android.media.MediaPlayer().apply {
+                setDataSource(this@MainActivity, uri)
+                setOnPreparedListener { mp ->
+                    playerTitle.text = name
+                    playerStatus.text = "در حال پخش"
+                    seekBar.max = mp.duration
+                    mp.start()
+                }
+                setOnCompletionListener { playerStatus.text = "پخش تمام شد" }
+                setOnErrorListener { _, what, extra ->
+                    playerStatus.text = "این فایل قابل پخش نیست ($what/$extra)"
+                    true
+                }
+                prepareAsync()
+            }
+            playerTitle.text = name
+            playerStatus.text = "در حال آماده‌سازی پخش…"
+        } catch (e: Exception) { playerStatus.text = "پخش ناموفق بود: " + (e.message ?: "") }
+    }
+
+    private fun togglePlayback() {
+        val p = mediaPlayer ?: run { playerStatus.text = "ابتدا یک آهنگ انتخاب کن."; return }
+        if (p.isPlaying) { p.pause(); playerStatus.text = "متوقف شد" }
+        else { p.start(); playerStatus.text = "در حال پخش" }
+    }
+    private fun seekBy(delta: Int) {
+        mediaPlayer?.let { p -> p.seekTo((p.currentPosition + delta).coerceIn(0, p.duration)) }
     }
 
     private fun download() {
@@ -333,7 +489,7 @@ class MainActivity : ComponentActivity() {
                         try {
                             val fileName = safeName(title) + ".m4a"
                             saveRemote(downloadUrl, fileName, extractionPageUrl, expectedDurationMs)
-                            ui.post { setWorking(false, "دانلود رسمی کامل شد: $fileName در پوشه Music/Suno Studio ذخیره شد.") }
+                            ui.post { setWorking(false, "دانلود رسمی کامل شد: $fileName در پوشه Music/Suno Studio ذخیره شد."); refreshTracks() }
                         } catch (e: Exception) {
                             ui.post { setWorking(false, "دریافت فایل رسمی ناموفق بود: " + (e.message ?: "خطای نامشخص")) }
                         }
@@ -406,124 +562,6 @@ class MainActivity : ComponentActivity() {
             throw e
         }
     }
-
-    private fun convert() {
-        val source = audioUri ?: run { message("ابتدا یک فایل صوتی انتخاب کن."); return }
-        if (working) return
-        setWorking(true, "در حال تبدیل فایل روی گوشی…")
-        thread {
-            var result: Uri? = null
-            val temp = File(cacheDir, "suno_" + System.currentTimeMillis() + ".wav")
-            try {
-                val base = safeName(displayName(source).substringBeforeLast('.', "audio"))
-                decodeWav(source, temp)
-                result = outputUri(base + ".wav", "audio/wav")
-                contentResolver.openOutputStream(result, "w")!!.use { out -> temp.inputStream().use { it.copyTo(out) } }
-                publish(result, temp.length())
-                ui.post { setWorking(false, "تبدیل انجام شد؛ " + base + ".wav در پوشه Music/Suno Studio ذخیره شد.") }
-            } catch (e: Exception) {
-                if (result != null) try { contentResolver.delete(result, null, null) } catch (_: Exception) {}
-                ui.post { setWorking(false, "تبدیل ناموفق بود: " + (e.message ?: "فرمت پشتیبانی نشد")) }
-            } finally { temp.delete() }
-        }
-    }
-
-    private fun decodeWav(source: Uri, file: File) {
-        val extractor = MediaExtractor()
-        var codec: MediaCodec? = null
-        var out: RandomAccessFile? = null
-        try {
-            extractor.setDataSource(this, source, null)
-            var track = -1
-            var fmt: MediaFormat? = null
-            for (i in 0 until extractor.trackCount) {
-                val f = extractor.getTrackFormat(i)
-                if (f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) { track = i; fmt = f; break }
-            }
-            require(track >= 0 && fmt != null) { "ترک صوتی پیدا نشد." }
-            extractor.selectTrack(track)
-            val inputFormat = fmt!!
-            codec = MediaCodec.createDecoderByType(inputFormat.getString(MediaFormat.KEY_MIME)!!)
-            codec.configure(inputFormat, null, null, 0)
-            codec.start()
-            out = RandomAccessFile(file, "rw")
-            out.setLength(0)
-            out.write(ByteArray(44))
-            val info = MediaCodec.BufferInfo()
-            var inputEnd = false
-            var outputEnd = false
-            var rate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            var channels = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            var total = 0L
-            while (!outputEnd) {
-                if (!inputEnd) {
-                    val ix = codec.dequeueInputBuffer(10000)
-                    if (ix >= 0) {
-                        val b = codec.getInputBuffer(ix)!!
-                        val n = extractor.readSampleData(b, 0)
-                        if (n < 0) {
-                            codec.queueInputBuffer(ix, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputEnd = true
-                        } else {
-                            codec.queueInputBuffer(ix, 0, n, extractor.sampleTime, 0)
-                            extractor.advance()
-                        }
-                    }
-                }
-                val ox = codec.dequeueOutputBuffer(info, 10000)
-                if (ox == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    rate = codec.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    channels = codec.outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                } else if (ox >= 0) {
-                    val b = codec.getOutputBuffer(ox)
-                    if (b != null && info.size > 0) {
-                        b.position(info.offset)
-                        b.limit(info.offset + info.size)
-                        val of = codec.outputFormat
-                        val encoding = if (of.containsKey(MediaFormat.KEY_PCM_ENCODING)) of.getInteger(MediaFormat.KEY_PCM_ENCODING) else AudioFormat.ENCODING_PCM_16BIT
-                        if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
-                            val floats = b.slice().order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-                            val pcm = java.nio.ByteBuffer.allocate(floats.remaining() * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                            while (floats.hasRemaining()) {
-                                val sample = floats.get().coerceIn(-1f, 1f)
-                                pcm.putShort((sample * (if (sample < 0f) 32768f else 32767f)).toInt().toShort())
-                            }
-                            out.write(pcm.array())
-                            total += pcm.position()
-                        } else {
-                            val bytes = ByteArray(b.remaining())
-                            b.get(bytes)
-                            out.write(bytes)
-                            total += bytes.size
-                        }
-                    }
-                    outputEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                    codec.releaseOutputBuffer(ox, false)
-                }
-            }
-            require(total > 0) { "دادهٔ صوتی قابل تبدیل دریافت نشد." }
-            require(total <= 0xFFFFFFFFL - 36) { "فایل برای قالب WAV بیش از حد بزرگ است." }
-            out.seek(0)
-            wavHeader(out, total, rate, channels)
-            out.fd.sync()
-        } finally {
-            try { codec?.stop() } catch (_: Exception) {}
-            try { codec?.release() } catch (_: Exception) {}
-            extractor.release()
-            try { out?.close() } catch (_: Exception) {}
-        }
-    }
-
-    private fun wavHeader(f: RandomAccessFile, size: Long, rate: Int, channels: Int) {
-        f.writeBytes("RIFF"); intLE(f, (size + 36).toInt()); f.writeBytes("WAVEfmt ")
-        intLE(f, 16); shortLE(f, 1); shortLE(f, channels); intLE(f, rate)
-        intLE(f, rate * channels * 2); shortLE(f, channels * 2); shortLE(f, 16)
-        f.writeBytes("data"); intLE(f, size.toInt())
-    }
-    private fun intLE(f: RandomAccessFile, n: Int) {
-        f.write(n and 255); f.write(n ushr 8 and 255); f.write(n ushr 16 and 255); f.write(n ushr 24 and 255)
-    }
-    private fun shortLE(f: RandomAccessFile, n: Int) { f.write(n and 255); f.write(n ushr 8 and 255) }
 
     private fun outputUri(name: String, mime: String): Uri {
         val v = ContentValues().apply {
@@ -642,7 +680,7 @@ class MainActivity : ComponentActivity() {
         busyBar.visibility = if (value) View.VISIBLE else View.GONE
         message(msg)
     }
-    private fun message(s: String) { status.text = s }
+    private fun message(s: String) { if (::status.isInitialized) status.text = s }
     private fun text(s: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
         text = s; textSize = size; setTextColor(color)
         if (bold) setTypeface(typeface, Typeface.BOLD)
@@ -657,4 +695,5 @@ class MainActivity : ComponentActivity() {
     private fun params() = LinearLayout.LayoutParams(-1, -2)
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
     private fun TextView.pad(l: Int, t: Int, r: Int, b: Int) = apply { setPadding(dp(l), dp(t), dp(r), dp(b)) }
+    private fun View.padTop(t: Int) = apply { setPadding(paddingLeft, dp(t), paddingRight, paddingBottom) }
 }
