@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var seekBar: SeekBar
     private var mediaPlayer: android.media.MediaPlayer? = null
     private var selectedTrack: Uri? = null
+    private var currentStatus: TextView? = null
     private val trackUris = mutableListOf<Uri>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,6 +152,7 @@ class MainActivity : ComponentActivity() {
         busyBar = ProgressBar(this).apply { visibility = View.GONE }
         page.addView(busyBar)
         status = text("آماده به کار", 13f, Color.rgb(190, 178, 255), true).pad(0, 8, 0, 0)
+        currentStatus = status
         page.addView(status)
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -195,6 +197,9 @@ class MainActivity : ComponentActivity() {
             13f, Color.LTGRAY, false
         ).pad(0, 20, 0, 0))
         page.addView(text("فایل‌های دانلودشده در پوشهٔ Download گوشی ذخیره می‌شوند.", 12f, Color.GRAY, false).pad(0, 12, 0, 0))
+        val pageStatus = text("آماده به کار", 13f, Color.rgb(190, 178, 255), true).pad(0, 18, 0, 0)
+        currentStatus = pageStatus
+        page.addView(pageStatus)
         return page
     }
 
@@ -680,7 +685,7 @@ class MainActivity : ComponentActivity() {
         busyBar.visibility = if (value) View.VISIBLE else View.GONE
         message(msg)
     }
-    private fun message(s: String) { if (::status.isInitialized) status.text = s }
+    private fun message(s: String) { currentStatus?.text = s; if (::status.isInitialized) status.text = s }
     private fun text(s: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
         text = s; textSize = size; setTextColor(color)
         if (bold) setTypeface(typeface, Typeface.BOLD)
