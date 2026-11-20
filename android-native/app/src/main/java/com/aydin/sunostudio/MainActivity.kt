@@ -72,9 +72,12 @@ class MainActivity : ComponentActivity() {
             }
             content.addView(page)
             for (i in 0 until nav.childCount) {
-                val b = nav.getChildAt(i) as TextView
-                b.setTextColor(if (i == index) Color.rgb(190, 160, 255) else Color.LTGRAY)
-                b.setTypeface(null, if (i == index) Typeface.BOLD else Typeface.NORMAL)
+                val item = nav.getChildAt(i) as? LinearLayout ?: continue
+                for (childIndex in 0 until item.childCount) {
+                    val label = item.getChildAt(childIndex) as? TextView ?: continue
+                    label.setTextColor(if (i == index) Color.rgb(190, 160, 255) else Color.LTGRAY)
+                    label.setTypeface(null, if (i == index) Typeface.BOLD else Typeface.NORMAL)
+                }
             }
         }
         pages.forEachIndexed { index, name ->
