@@ -11,8 +11,8 @@ android {
         applicationId = "com.aydin.sunostudio"
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "3.0.0"
+        versionCode = 8
+        versionName = "3.0.1"
 
         // yt-dlp + Python + FFmpeg are bundled per ABI; keep only the real phone ABIs to limit APK size.
         ndk {

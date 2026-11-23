@@ -1,5 +1,6 @@
 package com.aydin.sunostudio
 
+import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import org.jsoup.Jsoup
@@ -13,17 +14,17 @@ class SunoInfo(
     val title: String,
     val artist: String,
     val image: String,
-    val candidates: List<String>
+    val candidates: List<String>,
+    val page: String,
+    val web: SunoWeb?
 )
 
 /**
- * Suno downloader.
- *
- * Why the old version failed: it found the public audio addresses in the page but then threw them away
- * and only asked an *authenticated* Suno API for an M4A file. Without a logged-in session that call
- * always fails, so nothing was ever saved. A public song page already publishes its audio file
- * (og:audio meta tag / the public cdn1.suno.ai/<song-id>.mp3 file that the web player itself plays),
- * so we use those, validate the bytes, and save the MP3 directly.
+ * Suno downloader with several independent strategies (each is tried until one produces real audio):
+ *  1. Hidden WebView reads the page (a real browser is not blocked) -> direct download with the
+ *     browser's User-Agent and cookies.
+ *  2. Same WebView downloads the bytes from inside the page.
+ *  3. The bundled yt-dlp engine (it has its own maintained Suno extractor).
  */
 object Suno {
     private val UUID = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -42,7 +43,6 @@ object Suno {
         false
     }
 
-    /** Returns a clean https page URL, or null when the text is not a Suno link. */
     fun normalizeUrl(raw: String): String? {
         val text = Net.extractUrl(raw)
         if (text.isBlank()) return null
@@ -59,7 +59,17 @@ object Suno {
     private fun meta(doc: Document, key: String): String =
         doc.select("meta[property=$key], meta[name=$key]").firstOrNull()?.attr("content")?.trim() ?: ""
 
-    fun resolve(page: String): SunoInfo {
+    private fun splitTitle(ogTitle: String): Pair<String, String> {
+        var t = ogTitle.replace(Regex("\\s*[|\\-–—]\\s*Suno.*$", RegexOption.IGNORE_CASE), "").trim()
+        var artist = ""
+        if (t.contains(" by @")) {
+            artist = t.substringAfter(" by @").trim()
+            t = t.substringBefore(" by @").trim()
+        }
+        return Pair(t, artist)
+    }
+
+    fun resolve(act: Activity, page: String): SunoInfo {
         var id = UUID.find(page.substringBefore('?'))?.value?.lowercase() ?: ""
         var title = ""
         var artist = ""
@@ -67,107 +77,158 @@ object Suno {
         val found = LinkedHashSet<String>()
         var pageError = ""
 
-        try {
-            val res = Jsoup.connect(page)
-                .userAgent(Net.UA)
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .referrer("https://www.google.com/")
-                .timeout(20000)
-                .followRedirects(true)
-                .ignoreHttpErrors(true)
-                .maxBodySize(0)
-                .execute()
-            if (id.isEmpty()) {
-                id = UUID.find(res.url().toString().substringBefore('?'))?.value?.lowercase() ?: ""
-            }
-            if (res.statusCode() in 200..299) {
-                val doc = res.parse()
-                val body = res.body()
+        // 1) real browser
+        val web = SunoWeb(act)
+        val wd = try {
+            web.load(page)
+        } catch (_: Throwable) {
+            null
+        }
+        if (wd != null) {
+            if (id.isEmpty()) id = UUID.find(wd.href.substringBefore('?'))?.value?.lowercase() ?: ""
+            val sp = splitTitle(wd.title)
+            title = sp.first
+            artist = sp.second
+            image = wd.image
+            found.addAll(wd.urls)
+        }
 
-                for (key in listOf("og:audio", "og:audio:secure_url", "twitter:player:stream")) {
-                    val v = meta(doc, key)
-                    if (v.startsWith("http")) found.add(v)
+        // 2) plain HTTP page read (works when the WebView could not read it)
+        if (title.isBlank() || found.isEmpty()) {
+            try {
+                val res = Jsoup.connect(page)
+                    .userAgent(web.userAgent)
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .referrer("https://www.google.com/")
+                    .timeout(20000)
+                    .followRedirects(true)
+                    .ignoreHttpErrors(true)
+                    .maxBodySize(0)
+                    .execute()
+                if (id.isEmpty()) {
+                    id = UUID.find(res.url().toString().substringBefore('?'))?.value?.lowercase() ?: ""
                 }
-                for (m in CDN_IN_PAGE.findAll(body)) {
-                    found.add(m.value.replace("\\/", "/"))
+                if (res.statusCode() in 200..299) {
+                    val doc = res.parse()
+                    for (key in listOf("og:audio", "og:audio:secure_url", "twitter:player:stream")) {
+                        val v = meta(doc, key)
+                        if (v.startsWith("http")) found.add(v)
+                    }
+                    for (m in CDN_IN_PAGE.findAll(res.body())) found.add(m.value.replace("\\/", "/"))
+                    if (title.isBlank()) {
+                        val sp = splitTitle(meta(doc, "og:title").ifBlank { doc.title() })
+                        title = sp.first
+                        artist = sp.second.ifBlank { meta(doc, "author").trimStart('@') }
+                    }
+                    if (image.isBlank()) image = meta(doc, "og:image")
+                } else {
+                    pageError = "HTTP " + res.statusCode()
                 }
-
-                val ogTitle = meta(doc, "og:title").ifBlank { doc.title() }
-                var t = ogTitle.replace(Regex("\\s*[|\\-–—]\\s*Suno.*$", RegexOption.IGNORE_CASE), "").trim()
-                if (t.contains(" by @")) {
-                    artist = t.substringAfter(" by @").trim()
-                    t = t.substringBefore(" by @").trim()
-                }
-                title = t
-                if (artist.isBlank()) artist = meta(doc, "author").trimStart('@')
-                image = meta(doc, "og:image")
-            } else {
-                pageError = "HTTP " + res.statusCode()
+            } catch (e: Exception) {
+                pageError = e.message ?: e.javaClass.simpleName
             }
-        } catch (e: Exception) {
-            pageError = e.message ?: e.javaClass.simpleName
         }
 
         val candidates = ArrayList<String>()
-        // Page-provided addresses first (only those that belong to this song when we know its id).
         for (c in found) {
             if (!mediaHostOk(c)) continue
             if (id.isNotEmpty() && !c.lowercase().contains(id)) continue
-            candidates.add(c)
+            if (!candidates.contains(c)) candidates.add(c)
         }
-        // Public CDN file that the Suno web player itself streams for shared songs.
         if (id.isNotEmpty()) {
             val cdn = "https://cdn1.suno.ai/$id.mp3"
             if (!candidates.contains(cdn)) candidates.add(cdn)
         }
-
         if (candidates.isEmpty()) {
+            web.close()
             val why = if (pageError.isNotBlank()) " ($pageError)" else ""
             throw IllegalStateException(
                 "شناسهٔ آهنگ از لینک پیدا نشد$why. لینک صفحهٔ آهنگ را به شکل suno.com/song/… وارد کنید."
             )
         }
-        val safeTitle = title.ifBlank { "Suno-" + id.take(8) }
-        return SunoInfo(id, safeTitle, artist, image, candidates)
+        val canonical = if (id.isNotEmpty()) "https://suno.com/song/$id" else page
+        return SunoInfo(id, title.ifBlank { "Suno-" + id.take(8) }, artist, image, candidates, canonical, web)
     }
 
-    /** Blocking. Returns (uri, file name). Throws with a Persian message on failure. */
+    /** Blocking. progress < 0 means "indeterminate". Returns (uri, file name). */
     fun download(ctx: Context, info: SunoInfo, onProgress: (Float, String) -> Unit): Pair<Uri, String> {
         val tmp = File(ctx.cacheDir, "suno_" + System.currentTimeMillis() + ".part")
         val errors = ArrayList<String>()
+        val web = info.web
         try {
             for (cand in info.candidates) {
+                // A) direct download with the browser's identity
                 onProgress(0f, "در حال دریافت فایل صوتی…")
-                val err = fetch(cand, tmp) { p -> onProgress(p, "در حال دریافت فایل صوتی…") }
-                if (err != null) {
-                    errors.add(err)
-                    continue
+                val cookies = web?.cookieHeader(cand) ?: ""
+                val ua = web?.userAgent ?: Net.UA
+                val errA = fetch(cand, tmp, ua, cookies) { p -> onProgress(p, "در حال دریافت فایل صوتی…") }
+                if (errA == null) {
+                    val ok = publishIfAudio(ctx, info, tmp, errors)
+                    if (ok != null) return ok
+                } else {
+                    errors.add("مستقیم: $errA")
                 }
-                val ext = sniffExtension(tmp)
-                if (ext == null) {
-                    errors.add("پاسخ سرور فایل صوتی نبود")
-                    continue
+
+                // B) download from inside the page
+                if (web != null) {
+                    onProgress(0f, "تلاش با مرورگر داخلی…")
+                    val errB = web.fetchViaPage(cand, tmp) { p -> onProgress(p, "تلاش با مرورگر داخلی…") }
+                    if (errB == null) {
+                        val ok = publishIfAudio(ctx, info, tmp, errors)
+                        if (ok != null) return ok
+                    } else {
+                        errors.add("مرورگر: " + errB.take(60))
+                    }
                 }
-                if (tmp.length() < 50_000L) {
-                    errors.add("فایل دریافتی بسیار کوچک بود")
-                    continue
-                }
-                onProgress(1f, "در حال ذخیره در حافظهٔ گوشی…")
-                val name = Store.safeName(info.title, "Suno-" + info.id.take(8)) + "." + ext
-                val uri = Store.publish(ctx, tmp, name, Store.Kind.AUDIO)
-                return Pair(uri, name)
             }
-            val detail = errors.distinct().joinToString("، ")
+
+            // C) yt-dlp
+            if (Engine.state == Engine.State.READY) {
+                onProgress(-1f, "تلاش با موتور دانلود…")
+                try {
+                    val f = Media.download(ctx, info.page, 0, true, "suno-" + System.currentTimeMillis()) { fr, _ ->
+                        if (fr >= 0f) onProgress(fr, "دریافت با موتور دانلود…")
+                    }
+                    try {
+                        val name = Store.safeName(info.title, "Suno-" + info.id.take(8)) + "." + f.extension.lowercase()
+                        val uri = Store.publish(ctx, f, name, Store.Kind.AUDIO)
+                        return Pair(uri, name)
+                    } finally {
+                        f.parentFile?.deleteRecursively()
+                    }
+                } catch (e: Throwable) {
+                    errors.add("yt-dlp: " + (e.message ?: "").lines().lastOrNull { it.isNotBlank() }.orEmpty().take(110))
+                }
+            } else {
+                errors.add("موتور دانلود آماده نبود")
+            }
+
             throw IllegalStateException(
-                "دانلود انجام نشد: $detail.\nمعمولاً یعنی آهنگ عمومی نیست یا اینترنت/سرور Suno مشکل دارد؛ " +
-                    "مطمئن شوید آهنگ در Suno روی حالت Public است."
+                "دانلود انجام نشد.\n" + errors.distinct().joinToString("\n") +
+                    "\nمطمئن شوید آهنگ در Suno روی حالت Public است و اینترنت/VPN وصل است."
             )
         } finally {
+            web?.close()
             tmp.delete()
         }
     }
 
-    private fun fetch(urlStr: String, dest: File, onProgress: (Float) -> Unit): String? {
+    private fun publishIfAudio(ctx: Context, info: SunoInfo, tmp: File, errors: MutableList<String>): Pair<Uri, String>? {
+        val ext = sniffExtension(tmp)
+        if (ext == null) {
+            errors.add("پاسخ سرور فایل صوتی نبود")
+            return null
+        }
+        if (tmp.length() < 50_000L) {
+            errors.add("فایل دریافتی بسیار کوچک بود")
+            return null
+        }
+        val name = Store.safeName(info.title, "Suno-" + info.id.take(8)) + "." + ext
+        val uri = Store.publish(ctx, tmp, name, Store.Kind.AUDIO)
+        return Pair(uri, name)
+    }
+
+    private fun fetch(urlStr: String, dest: File, ua: String, cookies: String, onProgress: (Float) -> Unit): String? {
         val c: HttpURLConnection = try {
             URL(urlStr).openConnection() as HttpURLConnection
         } catch (e: Exception) {
@@ -177,10 +238,13 @@ object Suno {
             c.instanceFollowRedirects = true
             c.connectTimeout = 15000
             c.readTimeout = 30000
-            c.setRequestProperty("User-Agent", Net.UA)
+            c.setRequestProperty("User-Agent", ua)
             c.setRequestProperty("Accept", "audio/mpeg,audio/*;q=0.9,*/*;q=0.8")
+            c.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
             c.setRequestProperty("Referer", "https://suno.com/")
+            c.setRequestProperty("Origin", "https://suno.com")
             c.setRequestProperty("Accept-Encoding", "identity")
+            if (cookies.isNotBlank()) c.setRequestProperty("Cookie", cookies)
             val code = c.responseCode
             if (code !in 200..299) return "HTTP $code"
             val type = (c.contentType ?: "").lowercase()
@@ -216,7 +280,6 @@ object Suno {
         }
     }
 
-    /** Looks at the first bytes so we never save an HTML error page as "music". */
     private fun sniffExtension(f: File): String? {
         val h = ByteArray(12)
         val n = try {

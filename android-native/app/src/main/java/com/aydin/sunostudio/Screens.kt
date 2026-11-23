@@ -74,19 +74,21 @@ class SunoScreen(act: MainActivity) : Screen(act) {
         status.bar.setIndeterminate()
         status.info("در حال خواندن اطلاعات آهنگ…")
         thread(name = "suno-download") {
+            var info: SunoInfo? = null
             try {
-                val info = Suno.resolve(page)
+                val resolved = Suno.resolve(act, page)
+                info = resolved
                 act.runOnUiThread {
-                    preview.filled(info.title, info.artist.ifBlank { "Suno" })
+                    preview.filled(resolved.title, resolved.artist.ifBlank { "Suno" })
                     status.info("در حال دریافت فایل صوتی…")
                 }
-                if (info.image.isNotBlank()) {
-                    val bmp = Net.loadBitmap(info.image, 300)
+                if (resolved.image.isNotBlank()) {
+                    val bmp = Net.loadBitmap(resolved.image, 300)
                     if (bmp != null) act.runOnUiThread { preview.setCover(bmp) }
                 }
-                val result = Suno.download(act, info) { p, msg ->
+                val result = Suno.download(act, resolved) { p, msg ->
                     act.runOnUiThread {
-                        status.bar.setProgress(p)
+                        if (p < 0f) status.bar.setIndeterminate() else status.bar.setProgress(p)
                         val pct = if (p in 0.01f..0.99f) " " + (p * 100).toInt().toString().fa() + "٪" else ""
                         status.info(msg + pct)
                     }
@@ -98,6 +100,7 @@ class SunoScreen(act: MainActivity) : Screen(act) {
                     setWorking(false)
                 }
             } catch (e: Throwable) {
+                info?.web?.close()
                 act.runOnUiThread {
                     status.bar.reset()
                     status.bad(e.message ?: "خطای ناشناخته")
@@ -225,7 +228,9 @@ class PlatformScreen(act: MainActivity, private val cfg: PlatformCfg) : Screen(a
 
         thread(name = "media-download") {
             try {
-                val info = Media.fetchInfo(url)
+                val isFb = Net.hostMatches(Net.hostOf(url), listOf("facebook.com", "fb.watch", "fb.com"))
+                val target = if (isFb && (url.contains("/share/") || url.contains("fb.watch"))) Media.resolveRedirect(url) else url
+                val info = Media.fetchInfo(target)
                 if (cancelled) throw IllegalStateException("دانلود لغو شد.")
                 val meta = listOf(info.uploader, formatDuration(info.durationSec).fa())
                     .filter { it.isNotBlank() }.joinToString("  •  ")
@@ -239,7 +244,7 @@ class PlatformScreen(act: MainActivity, private val cfg: PlatformCfg) : Screen(a
                 }
 
                 var lastPct = -1
-                val file = Media.download(act, url, if (height <= 0) 100000 else height, audioOnly, processId) { frac, line ->
+                val file = Media.download(act, target, if (height <= 0) 100000 else height, audioOnly, processId) { frac, line ->
                     val processing = line.contains("[Merger]") || line.contains("[ExtractAudio]") ||
                         line.contains("[VideoConvertor]") || line.contains("[Fixup")
                     if (processing) {
