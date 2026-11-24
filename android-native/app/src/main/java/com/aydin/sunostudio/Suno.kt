@@ -8,6 +8,8 @@ import org.jsoup.nodes.Document
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import org.json.JSONObject
 
 class SunoInfo(
     val id: String,
@@ -135,11 +137,9 @@ object Suno {
             if (id.isNotEmpty() && !c.lowercase().contains(id)) continue
             if (!candidates.contains(c)) candidates.add(c)
         }
-        if (id.isNotEmpty()) {
-            val cdn = "https://cdn1.suno.ai/$id.mp3"
-            if (!candidates.contains(cdn)) candidates.add(cdn)
-        }
-        if (candidates.isEmpty()) {
+        // Do not invent a CDN URL from the song UUID. Suno media URLs are signed/managed
+        // and a guessed cdn1.suno.ai/{id}.mp3 commonly returns HTTP 403.
+        if (id.isBlank()) {
             web.close()
             val why = if (pageError.isNotBlank()) " ($pageError)" else ""
             throw IllegalStateException(
@@ -182,7 +182,24 @@ object Suno {
                 }
             }
 
-            // C) yt-dlp
+            // C) Third-party downloader fallback. Its own server fetches the public Suno
+            // track; the app does not try to bypass Suno CDN access controls.
+            onProgress(-1f, "تلاش از مسیر جایگزین Suno…")
+            try {
+                val proxyError = downloadViaService(info, tmp) { p ->
+                    onProgress(p, "دریافت از سرویس جایگزین Suno…")
+                }
+                if (proxyError == null) {
+                    val ok = publishIfAudio(ctx, info, tmp, errors)
+                    if (ok != null) return ok
+                } else {
+                    errors.add("سرویس جایگزین: $proxyError")
+                }
+            } catch (e: Throwable) {
+                errors.add("سرویس جایگزین: " + (e.message ?: e.javaClass.simpleName).take(120))
+            }
+
+            // D) yt-dlp
             if (Engine.state == Engine.State.READY) {
                 onProgress(-1f, "تلاش با موتور دانلود…")
                 try {
@@ -210,6 +227,80 @@ object Suno {
         } finally {
             web?.close()
             tmp.delete()
+        }
+    }
+
+
+    /**
+     * Uses the same public API endpoints referenced by the supplied Suno downloader page:
+     * GET /api/info?url=... then GET /api/download?url=...&format=mp3&title=...
+     * The remote service performs the Suno-side fetch. Only public song-page URLs are sent.
+     */
+    private fun downloadViaService(info: SunoInfo, dest: File, onProgress: (Float) -> Unit): String? {
+        val base = "https://sunodownloader.ai"
+        val encodedPage = URLEncoder.encode(info.page, "UTF-8")
+        val infoConn = (URL("$base/api/info?url=$encodedPage").openConnection() as HttpURLConnection)
+        try {
+            infoConn.instanceFollowRedirects = true
+            infoConn.connectTimeout = 20000
+            infoConn.readTimeout = 30000
+            infoConn.setRequestProperty("User-Agent", Net.UA)
+            infoConn.setRequestProperty("Accept", "application/json")
+            infoConn.setRequestProperty("Referer", "$base/fa/")
+            val status = infoConn.responseCode
+            if (status !in 200..299) return "بررسی آهنگ: HTTP $status"
+            val body = infoConn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText().take(256_000) }
+            val json = try { JSONObject(body) } catch (_: Exception) {
+                return "پاسخ اطلاعات آهنگ قابل‌خواندن نبود"
+            }
+            if (!json.optBoolean("ok", false)) {
+                return json.optString("error").ifBlank { "سرویس آهنگ را تأیید نکرد" }.take(140)
+            }
+        } finally {
+            infoConn.disconnect()
+        }
+
+        val title = info.title.ifBlank { "suno-${info.id.take(8)}" }
+        val encodedTitle = URLEncoder.encode(title, "UTF-8")
+        val downloadUrl = "$base/api/download?url=$encodedPage&format=mp3&title=$encodedTitle"
+        val conn = (URL(downloadUrl).openConnection() as HttpURLConnection)
+        try {
+            conn.instanceFollowRedirects = true
+            conn.connectTimeout = 20000
+            conn.readTimeout = 180000
+            conn.setRequestProperty("User-Agent", Net.UA)
+            conn.setRequestProperty("Accept", "audio/mpeg,audio/*,application/octet-stream,*/*;q=0.8")
+            conn.setRequestProperty("Referer", "$base/fa/")
+            val status = conn.responseCode
+            if (status !in 200..299) {
+                val detail = try { conn.errorStream?.bufferedReader()?.use { it.readText().take(180) } } catch (_: Exception) { null }
+                return "دانلود سرویس: HTTP $status" + if (detail.isNullOrBlank()) "" else " ($detail)"
+            }
+            val type = (conn.contentType ?: "").lowercase()
+            if (type.contains("text/html") || type.contains("application/json")) {
+                val detail = try { conn.inputStream.bufferedReader().use { it.readText().take(180) } } catch (_: Exception) { "" }
+                return "سرویس به‌جای فایل صوتی پاسخ متنی داد" + if (detail.isBlank()) "" else ": $detail"
+            }
+            val total = conn.contentLengthLong
+            var done = 0L
+            conn.inputStream.use { input ->
+                dest.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        done += count
+                        if (total > 0) onProgress((done.toFloat() / total).coerceIn(0f, 1f))
+                    }
+                    output.flush()
+                }
+            }
+            if (done < 50_000L) return "فایل دریافتی از سرویس خیلی کوچک بود ($done bytes)"
+            if (sniffExtension(dest) == null) return "خروجی سرویس فایل صوتی معتبر نبود (نوع: $type)"
+            return null
+        } finally {
+            conn.disconnect()
         }
     }
 
